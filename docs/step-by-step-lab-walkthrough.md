@@ -270,7 +270,7 @@ aws iam list-mfa-devices \
   --output text
 ```
 
-IAM returned `1`, confirming that the new user had one MFA device. I deleted the QR image and kept passwords and codes out of the repository. Before switching to the lab user, I checked the active AWS identity and signed out of the root session:
+IAM returned `1`, confirming that the new user had one MFA device. I deleted the QR image after enrollment because it contains the seed used to generate MFA codes. I kept that seed, passwords, and one-time codes out of the repository, following [AWS's guidance to protect the QR seed like a password](https://docs.aws.amazon.com/IAM/latest/APIReference/API_CreateVirtualMFADevice.html). With MFA enrollment confirmed, I checked the bootstrap identity and signed out:
 
 ```bash
 aws sts get-caller-identity --query 'Arn' --output text
