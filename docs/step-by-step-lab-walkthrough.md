@@ -81,7 +81,13 @@ My Terraform check returned version `1.16.6`. AWS CLI was available under a diff
 
 Terraform was already installed, so I did not install it again. The version check confirmed that the expected Terraform tool was available.
 
-For the missing AWS CLI, I used AWS's user-local `v2/install.sh` installer. The installation reported AWS CLI `2.38.3`, with the executable under `/home/devsecops/.local/bin`. I checked that executable directly:
+For the missing AWS CLI, I ran AWS's v2 installer from my ordinary `devsecops` WSL account. This command downloads the installer and passes it to Bash; the Linux default installs for the current user, placing the executable under `/home/devsecops/.local/bin` ([AWS CLI installation guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)):
+
+```bash
+curl -fsSL https://awscli.amazonaws.com/v2/install.sh | bash
+```
+
+The installation reported AWS CLI `2.38.3`. I checked the user-local executable directly:
 
 ```bash
 /home/devsecops/.local/bin/aws --version
