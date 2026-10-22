@@ -329,8 +329,6 @@ PY
 
 The password update succeeded. I then returned to browser sign-in with the named `mds-devsecops-lab` profile and used `us-east-1` for subsequent AWS checks.
 
-Before defining the lab infrastructure, I reviewed the existing `$50` monthly AWS budget and its alerts with `aws budgets describe-budgets`, `describe-notifications-for-budget`, and `describe-subscribers-for-notification`. All three notifications had email subscribers, so I left the budget configuration unchanged. This gave me the account's cost-alert context before I chose the resources for the lab.
-
 My `aws cloudtrail describe-trails` check returned no trails, while `aws cloudtrail lookup-events` returned recent management events for my lab user. I then narrowed the project back to Linux hardening and did not proceed with the proposed GuardDuty inventory.
 
 ### 1.4 I created the Terraform files in my local project directory
