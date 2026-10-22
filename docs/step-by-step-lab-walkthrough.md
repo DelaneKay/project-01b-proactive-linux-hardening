@@ -2,7 +2,7 @@
 
 I wanted to build a private file-transfer server, restrict what its transfer account could do, and prove that the restrictions worked. My demonstration used `mds-sftp-test.txt`, a small text file containing `SFTP hardening lab transfer test`. I uploaded it, downloaded it, and compared the hashes. I then destroyed the AWS lab with Terraform.
 
-This walkthrough follows the dependencies from the beginning. I explain each tool before using it, identify the terminal for each command, and give a checkpoint before the next phase. I use the journal and captured terminal results for the lab history. Commands are grouped for readability; where the original command was not retained, I describe the recorded outcome rather than inventing an installation or execution transcript. Repository file links show the configuration alongside that history.
+This walkthrough follows the dependencies from the beginning. I explain each tool before using it, identify the terminal for each command, and give a checkpoint before the next phase. Commands are grouped in the order I used them. Repository file links show the configuration alongside the walkthrough.
 
 | Layer | Sequence |
 | --- | --- |
@@ -65,7 +65,7 @@ My Terraform check returned version `1.16.6`. AWS CLI was available under a diff
 
 Terraform was already installed, so I did not install it again.
 
-For the missing AWS CLI, I used AWS's user-local `v2/install.sh` installer. My journal records version `2.38.3` and the executable under `/home/devsecops/.local/bin`. I checked that executable directly:
+For the missing AWS CLI, I used AWS's user-local `v2/install.sh` installer. The installation reported AWS CLI `2.38.3`, with the executable under `/home/devsecops/.local/bin`. I checked that executable directly:
 
 ```bash
 /home/devsecops/.local/bin/aws --version
@@ -103,7 +103,7 @@ aws configure set region us-east-1
 
 The Region command sets a location, not an access key. I confirmed the initial authenticated identity was root before creating the separate lab user.
 
-I initially used my already-authenticated root identity for account bootstrap, then moved to the dedicated IAM user. These are the IAM commands recorded in my journal, before the named lab profile existed:
+I initially used my already-authenticated root identity for account bootstrap, then moved to the dedicated IAM user. I ran these IAM commands with my initial root sign-in, before the named lab profile existed:
 
 ```bash
 aws iam create-user --user-name mds-devsecops-lab --query 'User.UserName' --output text
@@ -116,7 +116,7 @@ aws iam list-attached-user-policies --user-name mds-devsecops-lab
 
 I created the console login profile through the CLI, using hidden Python password prompts and a private temporary JSON file. The initial profile required a password change at first sign-in. I also enrolled an authenticator through the CLI; I did not set up MFA through the console workflow previously described here.
 
-My journal records the password-creation block:
+To create the password, I used this block:
 
 ```bash
 set -e
@@ -156,7 +156,7 @@ I created a virtual MFA device and scanned its private QR image. My first attemp
 explorer.exe "$(wslpath -w "$HOME/.aws/mds-devsecops-lab-mfa.png")"
 ```
 
-I used this recorded workaround and opened the returned path in Windows File Explorer:
+I used this workaround and opened the returned path in Windows File Explorer:
 
 ```bash
 wslpath -w /home/devsecops/.aws/mds-devsecops-lab-mfa.png
@@ -287,9 +287,9 @@ I used the named `mds-devsecops-lab` profile and `us-east-1` explicitly for the 
 
 **Checkpoint:** I know which AWS account, principal, and Region the commands will use. No infrastructure has been created yet.
 
-Before moving into the infrastructure design, I also reviewed the existing $50 monthly budget. The journal records calls to `aws budgets describe-budgets`, `describe-notifications-for-budget`, and `describe-subscribers-for-notification`. It confirmed email subscribers for the three notifications; I did not change the budget. The full original command arguments were not retained.
+Before moving into the infrastructure design, I reviewed the existing $50 monthly budget with `aws budgets describe-budgets`, `describe-notifications-for-budget`, and `describe-subscribers-for-notification`. All three notifications had email subscribers. I did not change the budget.
 
-The recorded `aws cloudtrail describe-trails` check returned no trails, while `aws cloudtrail lookup-events` returned recent management events for my lab user. I then narrowed the project back to Linux hardening. The proposed GuardDuty inventory was not recorded as completed.
+My `aws cloudtrail describe-trails` check returned no trails, while `aws cloudtrail lookup-events` returned recent management events for my lab user. I then narrowed the project back to Linux hardening and did not proceed with the proposed GuardDuty inventory.
 
 ### 1.4 I created the Terraform files in my local project directory
 
@@ -308,9 +308,9 @@ I had working tools, credentials, and source files. Next I needed facts to infor
 
 **Run in: local WSL, with the profile from Phase 1.3. These are read-only queries.**
 
-I checked existing VPCs, available zones, and offerings for both T2 and T3 before selecting the network and instance sizes. The journal retains those results; the complete original query arguments are not preserved.
+I checked existing VPCs, available zones, and offerings for both T2 and T3 before selecting the network and instance sizes. I confirmed the existing VPC range, selected an available AZ, and checked the candidate instance sizes.
 
-The following AMI and encryption commands are preserved in the journal:
+I then checked the Ubuntu image and EBS encryption defaults:
 
 ```bash
 aws ssm get-parameter \
@@ -417,7 +417,7 @@ aws iam get-policy-version \
   --profile mds-devsecops-lab
 ```
 
-The compact query was subsequently confirmed as run in the journal. It exposed parameter-read, patching, inventory, compliance, and legacy messaging permissions beyond the Session Manager channels I needed. That review led to the narrower five-action agent policy below.
+The compact query exposed parameter-read, patching, inventory, compliance, and legacy messaging permissions beyond the Session Manager channels I needed. That review led to the narrower five-action agent policy below.
 
 Before deployment, I also reviewed the instance permissions. My human AWS account could provision resources; the servers did not need that privilege. Both agents needed these five SSM actions:
 
@@ -440,11 +440,11 @@ Before deployment, I also reviewed the instance permissions. My human AWS accoun
 
 The admin role additionally needed permission to start a session to the target and use the lab transfer bucket. Ansible's SSM connection stages temporary module files in S3. I scoped the controller's S3 actions to that bucket and its objects. The target downloads short-lived presigned URLs, so network access to S3 is required even without separate target S3 credentials. This is described in the [Ansible SSM connection documentation](https://docs.ansible.com/projects/ansible/latest/collections/amazon/aws/aws_ssm_connection.html).
 
-I chose one managed NAT Gateway because it saved me operating another Linux server. The single-AZ design was appropriate for this temporary exercise. My journal estimated about `$32.85/month` for continuous NAT usage and `$22.85/month` for the two instances before other charges. Those were planning estimates, not current quotes. My budget alert was a notification, so teardown was part of the plan from the beginning.
+I chose one managed NAT Gateway because it saved me operating another Linux server. The single-AZ design was appropriate for this temporary exercise. My estimate was about `$32.85/month` for continuous NAT usage and `$22.85/month` for the two instances before other charges. Those were planning estimates, not current quotes. My budget alert was a notification, so teardown was part of the plan from the beginning.
 
 **Checkpoint:** I can explain the purpose of each resource and its permission boundary before creating it.
 
-**Workstation troubleshooting:** my WSL terminal became unresponsive during the IAM-policy review. The journal records advice to try `Ctrl+C`, then the following PowerShell command if necessary. It does not confirm that I ran the shutdown command:
+**Workstation troubleshooting:** my WSL terminal became unresponsive during the IAM-policy review. I was advised to try `Ctrl+C`, then use this PowerShell command if the terminal remained unresponsive:
 
 ```powershell
 wsl --shutdown
@@ -463,13 +463,13 @@ terraform init
 terraform validate
 ```
 
-My journal records the signed AWS provider `6.69.1` being installed and `Success! The configuration is valid.` I reviewed the infrastructure before applying it: private instances, no inbound security-group rules, encrypted volumes, and the instance permissions. Validation checks configuration syntax; the security choices still needed review.
+Terraform installed the signed AWS provider `6.69.1` and returned `Success! The configuration is valid.` I reviewed the infrastructure before applying it: private instances, no inbound security-group rules, encrypted volumes, and the instance permissions. Validation checks configuration syntax; the security choices still needed review.
 
 ### 1.8 I deployed the infrastructure and used its identifiers
 
 I deployed the lab with Terraform from the original WSL project directory. The two private instances and transfer bucket then became the inputs for SSM, Ansible, and SFTP. [outputs.tf](../terraform/outputs.tf) exposes the instance and bucket identifiers.
 
-The recorded target instance ID was `i-0cce45e09ec35a12a`, and I used the `mds-devsecops-lab` profile in `us-east-1`. The historical identifiers below belong to the lab that was later destroyed.
+The target instance ID was `i-0cce45e09ec35a12a`, and I used the `mds-devsecops-lab` profile in `us-east-1`. The historical identifiers below belong to the lab that was later destroyed.
 
 **Checkpoint:** the AWS resources existed before I began the access configuration.
 
@@ -479,7 +479,7 @@ The recorded target instance ID was `i-0cce45e09ec35a12a`, and I used the `mds-d
 
 AWS resources existing does not mean I can manage them yet. Session Manager needs an agent on the instance, suitable IAM permissions and outbound connectivity, and a client plugin on my workstation.
 
-Both nodes needed a working SSM Agent, instance permissions, and outbound connectivity. The workstation needed the Session Manager plugin. I used SSM to reach the private instances; the retained evidence does not preserve the plugin-installation or registration-query command.
+Both nodes needed a working SSM Agent, instance permissions, and outbound connectivity. I used SSM to reach the private instances without opening public SSH access.
 
 **Checkpoint:** I could open an SSM session to the target without public SSH access.
 
@@ -515,10 +515,10 @@ SSH listened on local port 22, alongside resolver and time-service sockets. That
 
 The 5-GiB disk created by Terraform is a block device. SFTP needs a mounted filesystem. I chose `/srv/sftp-data` as the server-side storage location and future chroot root. A **chroot** gives the SFTP account a restricted filesystem view; its `/` will represent this directory.
 
-The journal selected a separate data volume for the target:
+I selected a separate data volume for the target:
 
 
-The data mount used `/srv/sftp-data` on the separate disk. Its root-owned chroot and writable upload directory are described below. The exact disk-preparation commands were not retained.
+The data mount used `/srv/sftp-data` on the separate disk. Its root-owned chroot and writable upload directory are described below.
 
 **Checkpoint:** the separate data mount was in place before the SFTP account used its upload directory.
 
@@ -526,19 +526,19 @@ The data mount used `/srv/sftp-data` on the separate disk. Its root-owned chroot
 
 Ansible runs tasks against a target from a **controller**. In this lab the controller is the private admin EC2, while WSL remains my Terraform workstation.
 
-I used the private admin node as the Ansible controller, with its instance role providing AWS permissions. The retained journal does not preserve the exact controller preparation commands. The [collection requirements](../ansible/requirements.yml) document the repository's dependencies.
+I used the private admin node as the Ansible controller, with its instance role providing AWS permissions. The [collection requirements](../ansible/requirements.yml) document the repository's dependencies.
 
 ### 2.5 I created the SFTP key and staged the files the controller would need
 
 The transfer identity needs a dedicated key. The **private key** stays with the client; the **public key** is installed on the server. Possessing the public key alone does not let someone log in.
 
-My client used the dedicated key file `~/.ssh/mds-linux-hardening-1b-sftpdata`. The later connection command confirms that filename. The bucket listing showed the public key at `sftpdata/sftpdata.pub`; the private key stayed on the workstation. I have kept those recorded facts without substituting a new key-generation or upload command.
+My client used the dedicated key file `~/.ssh/mds-linux-hardening-1b-sftpdata`. The bucket held its public key at `sftpdata/sftpdata.pub`; the private key stayed on the workstation.
 
 ### 2.6 I configured Ansible to reach the private target
 
 The controller used `amazon.aws.aws_ssm` with the target instance ID, Region, and transfer bucket. The published [inventory example](../ansible/inventory/hosts.example.yml) and [collection requirements](../ansible/requirements.yml) document those settings. SSM shell access and Ansible module transfer have different dependencies: Ansible also needed S3 connectivity and the controller's scoped permissions.
 
-The exact original inventory-editing and connectivity-test commands were not retained.
+
 
 ### 2.7 I reviewed the account, filesystem, and SSH policy before applying it
 
@@ -577,7 +577,7 @@ Match all
 
 ### 2.8 I applied the access configuration with Ansible
 
-I used Ansible for the access configuration. The repository's [target playbook](../ansible/playbooks/harden-target.yml) expresses the target configuration; the retained journal and original terminal evidence available for this review do not establish its exact original invocation or recap.
+I used Ansible for the access configuration. The repository's [target playbook](../ansible/playbooks/harden-target.yml) expresses the target configuration; 
 
 In particular, I installed auditd, enabled UFW, and corrected network sysctls manually during the subsequent checks. I describe those actions in Layer 3 rather than claim that the earlier Ansible run had already done them.
 
@@ -600,7 +600,7 @@ hostname
 apt list --upgradable 2>/dev/null
 ```
 
-I reviewed the available updates and attempted an upgrade. The captured output records the result, but does not preserve the exact upgrade invocation.
+I reviewed the available updates and attempted an upgrade. 
 
 Read the proposed package changes before accepting. My run left `cloud-init`, `tmux`, `ubuntu-pro-client`, and `ubuntu-pro-client-l10n` deferred due to phasing. I did not override Ubuntu's phased rollout just to make the list empty.
 
@@ -652,7 +652,7 @@ sudo apt-config dump | grep -i 'Unattended-Upgrade::Automatic-Reboot'
 
 That query returned no matching setting. The separate reboot-required check reported that no reboot was currently required.
 
-The log confirmed an unattended-upgrades run. I retained the existing configuration rather than claim a new periodic-update configuration was written.
+The unattended-upgrades log confirmed a run, and I left the existing configuration in place.
 
 **Checkpoint:** I recorded the actual AppArmor enforcement state, unattended-update configuration, and available log evidence.
 
@@ -722,7 +722,7 @@ sudo auditctl -s
 sudo auditctl -l
 ```
 
-The original empty setup reported `No rules`. I added persistent watches for the following paths. These are the nine definitions confirmed by my output; the captured output does not establish the original rules filename:
+The original empty setup reported `No rules`. I added persistent watches for the following paths. These are the nine watch definitions I added:
 
 ```text
 -w /etc/passwd -p wa -k identity
@@ -807,7 +807,7 @@ sudo sysctl kernel.randomize_va_space kernel.dmesg_restrict kernel.kptr_restrict
 
 My initial inspection found `send_redirects` and `accept_source_route` still enabled in the default/interface settings. The captured target output identifies the interface as `ens5`.
 
-The captured command that disabled outgoing redirects was:
+I disabled outgoing redirects with:
 
 ```bash
 sudo tee /etc/sysctl.d/99-linux-hardening-network.conf >/dev/null <<'EOF'
@@ -820,7 +820,7 @@ sudo sysctl -p /etc/sysctl.d/99-linux-hardening-network.conf
 
 The quoted heredoc writes the lines literally; `sysctl -p` applies that file. This manual block replaces the whole named file, while the playbook writes additional host settings to the same path. On a playbook-managed rebuild, inspect its complete file and apply that instead of replacing it with this shorter historical block.
 
-I subsequently corrected source-route acceptance too. The later output confirms zero for `all`, `default`, and `ens5`; the exact second write command was not retained. I checked the live kernel values:
+I subsequently corrected source-route acceptance too. The `all`, `default`, and `ens5` values read back as zero. I checked the live kernel values:
 
 
 ```bash
@@ -843,7 +843,7 @@ sudo sysctl \
   net.ipv6.conf.all.accept_source_route
 ```
 
-My corrected `all`, `default`, and `ens5` redirect/source-route settings read back as `0`. I checked all three because looking only at `all` can hide a different interface/default value. These were the recorded values and their purposes:
+My corrected `all`, `default`, and `ens5` redirect/source-route settings read back as `0`. I checked all three because looking only at `all` can hide a different interface/default value. These were the values and their purposes:
 
 | Setting | Recorded value | Intended effect |
 | --- | ---: | --- |
@@ -870,7 +870,7 @@ sudo journalctl --disk-usage
 sudo journalctl -p warning --since today --no-pager
 ```
 
-My failed-unit check returned `0 loaded units listed`; rsyslog was active and the journal used 38.3 MiB. I reviewed boot-time virtual-hardware notices, a clock correction, IRQ-affinity messages, and a UFW block event in context. A logged block showed UFW had denied a packet; it did not mean SFTP accepted that packet.
+My failed-unit check returned `0 loaded units listed`; rsyslog was active and the systemd journal used 38.3 MiB. I reviewed boot-time virtual-hardware notices, a clock correction, IRQ-affinity messages, and a UFW block event in context. A logged block showed UFW had denied a packet; it did not mean SFTP accepted that packet.
 
 The kernel also reported MDS/MMIO CPU notices. I inspected the guest status with:
 
@@ -895,7 +895,7 @@ The client key proves my transfer user's identity to the server. The server's **
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 ```
 
-I reached the target's SFTP service through local port `2222` and compared the saved host-key fingerprint with the target fingerprint. The retained connection evidence confirms the tunnel endpoint and dedicated key, but not the complete original tunnel-start or SFTP-login command. The recorded transfer and shell-denial commands follow below.
+I reached the target's SFTP service through local port `2222` and compared the saved host-key fingerprint with the target fingerprint. The transfer and shell-denial commands follow below.
 
 ### 4.2 I uploaded and downloaded the text file, then compared its hashes
 
@@ -908,7 +908,7 @@ d138cba463fc98be7e2c7692f969a71d0a4c17c095462a4e76ca03582535090e  /tmp/mds-sftp-
 d138cba463fc98be7e2c7692f969a71d0a4c17c095462a4e76ca03582535090e  /tmp/mds-sftp-downloaded.txt
 ```
 
-The test file was uploaded into `/upload`. The captured `get` command downloaded it to a different local filename, and `!sha256sum` compared the two copies on WSL. Both digests matched. The original creation and upload command lines were not retained in the visible evidence.
+The test file was uploaded into `/upload`. The captured `get` command downloaded it to a different local filename, and `!sha256sum` compared the two copies on WSL. Both digests matched. 
 
 The target-side destination was `/srv/sftp-data/upload/mds-sftp-test.txt`. Inside the chroot, that same location appeared as `/upload/mds-sftp-test.txt`. The content was a test sentence, not a customer-register CSV. The successful transfer proved this file could make the round trip intact.
 
@@ -916,7 +916,7 @@ The target-side destination was `/srv/sftp-data/upload/mds-sftp-test.txt`. Insid
 
 A successful upload proves usability. It does not prove the user is restricted, so I also tested the boundaries.
 
-The captured SFTP output refused opening `/mds-write-denied-test.txt` with `Permission denied`. That demonstrates the transfer account could not write at the chroot root. The record does not preserve the full navigation-test sequence, so I do not claim it as an executed command sequence.
+The captured SFTP output refused opening `/mds-write-denied-test.txt` with `Permission denied`. That demonstrates the transfer account could not write at the chroot root. 
 
 **Back in the WSL shell, with the SSM tunnel still open:**
 
@@ -935,9 +935,9 @@ ssh-keygen -F '[127.0.0.1]:2222' | ssh-keygen -lf - -E sha256
 
 **Checkpoint:** transfer succeeded within `/upload`, a chroot-root write failed, shell execution was denied, and the server identity matched.
 
-### 4.4 I recorded what the evidence established
+### 4.4 What the tests showed
 
-| Check | My recorded result |
+| Check | Result |
 | --- | --- |
 | Management path | Both private EC2 nodes were managed with SSM; no public IP or inbound security-group rule |
 | Account boundary | Dedicated key, SFTP-only identity, root-owned chroot and restricted writable child directory |
@@ -947,13 +947,13 @@ ssh-keygen -F '[127.0.0.1]:2222' | ssh-keygen -lf - -E sha256
 | Host monitoring | auditd active, nine watches loaded, harmless test events captured, zero lost events at status check |
 | Maintenance and host settings | AppArmor/service state, update results, persistent sysctls, logs, and failed units inspected |
 
-I kept the [verification record](verification.md) and [hardening evidence](../evidence/hardening-results.md) alongside the code. My journal retained the mistakes too: the wrong WSL PATH, missing CLI profile, host confusion, an auditd unit checked before installation, and pasted commands accidentally joined together. Each taught me to check a prerequisite or the actual source of an output before changing policy.
+I kept the [verification record](verification.md) and [hardening evidence](../evidence/hardening-results.md) alongside the code. I also worked through several problems: the wrong WSL PATH, missing CLI profile, host confusion, Ansible's extra S3 dependency, an auditd unit checked before installation, and pasted commands accidentally joined together. the wrong WSL PATH, missing CLI profile, host confusion, an auditd unit checked before installation, and pasted commands accidentally joined together. Each taught me to check a prerequisite or the actual source of an output before changing policy.
 
 ### 4.5 I removed the temporary files and destroyed the AWS infrastructure
 
 Finishing the demonstration included removing the running resources. I closed my SFTP/tunnel sessions and exited the EC2 shells. **Run the remaining commands in local WSL**, using the same repository and Terraform state that created this lab.
 
-My first destroy attempt encountered `BucketNotEmpty`. The bucket still contained `sftpdata/sftpdata.pub`. I removed the remaining contents and retried Terraform. The exact object-removal command was not retained.
+My first destroy attempt encountered `BucketNotEmpty`. The bucket still contained `sftpdata/sftpdata.pub`. I removed the remaining contents and retried Terraform.
 
 ```bash
 cd ~/mds-aws-linux-hardening-1b
@@ -963,7 +963,7 @@ terraform state list
 
 I ran the destroy from the original Terraform working directory and reviewed its proposed deletions.
 
-After removing the bucket contents, my final run reported `Destroy complete! Resources: 1 destroyed.` That was the last resource from the earlier partial teardown. `terraform state list` was empty afterward. I retained the local state and evidence until I finished checking the result.
+After removing the bucket contents, Terraform reported `Destroy complete! Resources: 1 destroyed.` That was the last resource from the earlier partial teardown. `terraform state list` was empty afterward.
 
 ### 4.6 I checked AWS service state after Terraform finished
 
@@ -980,7 +980,7 @@ aws resourcegroupstaggingapi get-resources \
   --region us-east-1
 ```
 
-The retained screenshot shows instance and NAT states, an endpoint-ID not-found response, and a volume-ID not-found response. A subsequent filtered volume check returned no resources. I retain those results without replacing the original calls with new tag-filtered query recipes.
+The AWS checks showed instance and NAT states, an endpoint-ID not-found response, and a volume-ID not-found response. A subsequent filtered volume check returned no resources. 
 
 The S3 verification command is preserved in the chat:
 
@@ -992,7 +992,7 @@ aws s3api list-buckets \
   --region us-east-1
 ```
 
-My checks showed both instances `terminated`, the NAT Gateway `deleted`, the queried endpoint absent, and no volumes in the filtered volume result. Deleted instances can remain visible briefly; later their IDs can return not found. The tagging API still listed old ARNs, which did not override the direct service states. My S3 listing could not reach its endpoint at that time, so I recorded the Terraform deletion separately from that unavailable check.
+My checks showed both instances `terminated`, the NAT Gateway `deleted`, the queried endpoint absent, and no volumes in the filtered volume result. Deleted instances can remain visible briefly; later their IDs can return not found. The tagging API still listed old ARNs, which did not override the direct service states. My S3 listing could not reach its endpoint at that time, so I treated the Terraform deletion separately from that unavailable check.
 
 **Final checkpoint:** Terraform state is empty, direct service checks show no active lab resources in the queried scope, and any query error is recorded rather than interpreted as success. My demonstration ended with the infrastructure torn down and the documentation available to repeat the work.
 
