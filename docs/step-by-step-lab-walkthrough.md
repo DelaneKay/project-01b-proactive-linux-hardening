@@ -6,9 +6,9 @@
 
 This is my account of Project 1B: building and hardening a private SFTP server on AWS, then checking that the access restrictions worked. I used the small `mds-sftp-test.txt` fixture containing `SFTP hardening lab transfer test`; it was a lab test file, not a customer-register CSV. The walkthrough follows the work from local preparation through AWS access, infrastructure, server hardening, validation, and teardown.
 
-## The situation at Meridian Digital Services
+## The lab scenario
 
-Meridian Digital Services is a fictional company used for this lab. I wanted a file-transfer service that could accept a file from an authorized user while keeping the server private and limiting that user's access to the upload area. I was building a new AWS lab environment rather than investigating a pre-existing compromised server.
+I wanted a file-transfer service that could accept a file from an authorized user while keeping the server private and limiting that user's access to the upload area. I built a new AWS lab environment rather than investigating a pre-existing compromised server.
 
 I kept several security principles in mind as I worked. Infrastructure as Code made the cloud design reviewable and repeatable. Private subnets and Session Manager reduced the need to expose SSH to the internet. Least privilege shaped the SFTP account and its chroot boundary. Audit rules and host logs helped me observe security-relevant activity, while SHA-256 checksums let me verify the transferred file's integrity.
 
