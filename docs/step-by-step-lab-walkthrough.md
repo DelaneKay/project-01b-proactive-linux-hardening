@@ -217,6 +217,36 @@ sudo sshd -T -C user=sftpdata,host=localhost,addr=127.0.0.1 \
 
 The data device was confirmed before formatting. Formatting an unverified block device is destructive; on a reproduction, identify the attached volume and confirm it is the intended empty lab disk before issuing any filesystem command. The playbook should be reviewed for idempotence and for SSH configuration validation (`sshd -t`) before installation. Do not add an inbound UFW or security-group allow rule for TCP 22; SSM provides the management and test tunnel.
 
+### 5.2 Inspect the filesystem, identity, and effective SSH result
+
+After Ansible completes, use these read-only checks in the target's SSM shell. They connect the intended policy to the actual filesystem and account state:
+
+```bash
+lsblk -f
+findmnt --mountpoint /srv/sftp-data
+getent passwd sftpdata
+id sftpdata
+namei -l /srv/sftp-data/upload
+stat -c '%U:%G %a %n' \
+  /srv/sftp-data \
+  /srv/sftp-data/upload \
+  /home/sftpdata/.ssh \
+  /home/sftpdata/.ssh/authorized_keys
+```
+
+`lsblk -f` identifies block devices, filesystem type, and UUID; `findmnt` confirms the dedicated filesystem is mounted at the expected chroot path. The expected account has the restricted group, `nologin` shell, and no administrative group membership. `namei -l` walks every parent directory and exposes an unsafe owner or mode in the path, while `stat` checks the final objects. The recorded directory policy was chroot root `root:root 755`, upload directory `sftpdata:sftp-only 750`, `.ssh` `sftpdata:sftp-only 700`, and `authorized_keys` `sftpdata:sftp-only 600`.
+
+The effective SSH settings should be tested for the restricted account, not inferred from the global file alone:
+
+```bash
+sudo install -d -o root -g root -m 0755 /run/sshd
+sudo sshd -t
+sudo sshd -T -C user=sftpdata,host=localhost,addr=127.0.0.1 \
+  | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication|forcecommand|chrootdirectory|allowtcpforwarding|permittty)'
+```
+
+The `install -d` line recreates the runtime directory that was missing during the recorded manual check; it does not change the persistent SSH policy. On a system where the service manager already created `/run/sshd`, it should already exist. `sshd -T -C` should show the effective chroot and forced internal-SFTP command for this user, with forwarding and TTY disabled. If output differs, inspect drop-ins and `Match` ordering before testing with the account.
+
 ## 6. Validate SFTP's allowed and denied behavior
 
 ### 6.1 Start the SSM port-forwarding tunnel
@@ -399,6 +429,20 @@ sudo sysctl \
   net.ipv6.conf.all.accept_redirects \
   net.ipv6.conf.all.accept_source_route
 ```
+
+To prove the values are persisted as well as currently active, inspect the file and query the running kernel separately:
+
+```bash
+sudo cat /etc/sysctl.d/99-linux-hardening-network.conf
+sudo sysctl net.ipv4.conf.all.send_redirects \
+  net.ipv4.conf.default.send_redirects \
+  net.ipv4.conf.ens5.send_redirects \
+  net.ipv4.conf.all.accept_source_route \
+  net.ipv4.conf.default.accept_source_route \
+  net.ipv4.conf.ens5.accept_source_route
+```
+
+The file proves the intended values were written to disk; the `sysctl` query proves the current kernel exposes the expected runtime values. Both checks matter because a correctly edited file may not have been applied, and a runtime `sysctl -w` change may disappear on reboot if no persistent configuration exists.
 
 Recorded final values included ASLR `2`; dmesg and kernel-pointer restrictions `1`; protected hardlinks and symlinks `1`; IPv4 forwarding `0`; redirect acceptance `0`; redirect sending `0`; source routing `0`; reverse-path filtering `2`; TCP syncookies `1`; and IPv6 redirect/source-route acceptance `0`. The effective values for `all`, `default`, and `ens5` were checked separately because an `all` value alone does not guarantee an interface-specific setting is correct.
 
