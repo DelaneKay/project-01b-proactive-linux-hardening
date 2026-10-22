@@ -143,7 +143,7 @@ Having `aws` installed does not grant access to an AWS account. My first identit
 
 For this lab, I used a dedicated IAM user and a named AWS CLI profile. A profile is the local configuration that selects credentials and settings; the Linux user `devsecops`, IAM user `mds-devsecops-lab`, and CLI profile `mds-devsecops-lab` are separate identities.
 
-For the initial AWS account setup, I used the AWS account root user to create a separate lab IAM user and enroll MFA. I then signed in as that IAM user with browser-based `aws login`, which supplied short-lived CLI credentials. If an authorized IAM Identity Center role is already available, it can provide the lab access instead.
+For the initial AWS account setup, I used the AWS account root user to create a separate lab IAM user and enroll MFA. I then signed in as that IAM user with browser-based `aws login`, which supplied short-lived CLI credentials. For this lab, that was a better fit than using the legacy `aws configure` prompts to save long-lived IAM access keys: the credentials expired instead of leaving a permanent secret in my local AWS configuration. If an authorized IAM Identity Center role is already available, it can provide the lab access instead.
 
 I ran the identity check before signing in, then started browser sign-in and set the default Region:
 
@@ -279,7 +279,7 @@ aws sts get-caller-identity --query 'Arn' --output text
 aws logout
 ```
 
-`get-caller-identity` confirmed the root session before sign-out, and `aws logout` removed its cached CLI credentials. I used browser-based `aws login` for short-lived credentials instead of storing long-lived keys with the basic `aws configure` prompts. `aws configure get region` only reads the selected Region; `aws configure sso` is a separate temporary-credential method. [AWS documents this browser-based temporary-credential flow](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html).
+`get-caller-identity` confirmed the root session before sign-out, and `aws logout` removed its cached CLI credentials. `aws configure get region` only reads the selected Region; `aws configure sso` is a separate temporary-credential method. [AWS documents this browser-based temporary-credential flow](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html).
 
 I signed in from WSL with the lab profile, then checked the active identity and default Region:
 
