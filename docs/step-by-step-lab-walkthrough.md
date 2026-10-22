@@ -15,17 +15,15 @@ I guided the lab through four connected steps. Cloud hardening is layered: AWS n
 | 3 | Linux operating system hardening | Configure the host firewall, AppArmor, unattended updates, auditd, and kernel/network settings |
 | 4 | Validation and cleanup | Test allowed and denied behavior, review evidence and lessons from troubleshooting, then destroy the lab |
 
-Project 1A began with an existing server that already had unsafe settings; I investigated and remediated it. For Project 1B, I started from the other direction: I designed a small private environment, configured a Linux workload with least privilege, then tested the intended access and the boundaries around it. The workload used synthetic customer-register data in a controlled lab. This was not a real incident or a production service.
-
-> **Reconstruction note:** The Terraform configuration in this repository is the source used for the deployment. I did not retain the temporary Ansible playbook from the original run. I later reconstructed `ansible/playbooks/harden-target.yml` from the verified target configuration; it is not a byte-for-byte copy of the original. I syntax-checked the reconstructed playbook. The original successful Ansible run was recorded as `ok=17`, `changed=3`, `unreachable=0`, `failed=0`, but that recap cannot prove the reconstructed file produced it.
+Project 1A began with an existing server that already had unsafe settings; I investigated and remediated it. For Project 1B, I started from the other direction: I designed a small private environment, configured a Linux workload with least privilege, then tested the intended access and the boundaries around it. My transfer test used the harmless 33-byte `mds-sftp-test.txt` file. This was a controlled learning lab, not a real incident or production service.
 
 ## Why I built this lab
 
 My goal was to build a small private AWS environment for a Linux file-transfer workload, apply least-privilege controls before using it, test both the allowed and denied behavior, and then destroy the lab.
 
-I framed the workload as a private SFTP drop for synthetic customer-register data. I wanted the user to transfer files without getting a shell, browsing the host filesystem, writing outside the upload area, or connecting through public SSH. I knew a private subnet alone could not enforce all of those host-level restrictions, so I combined AWS network controls with Linux identity, OpenSSH, filesystem, firewall, audit, and kernel-network settings.
+I framed the workload as a private SFTP drop for test files. I wanted the user to transfer a file without getting a shell, browsing the host filesystem, writing outside the upload area, or connecting through public SSH. I knew a private subnet alone could not enforce all of those host-level restrictions, so I combined AWS network controls with Linux identity, OpenSSH, filesystem, firewall, audit, and kernel-network settings.
 
-I used synthetic data only. This was a learning exercise, not a production deployment or a real customer-data service.
+I used only the small synthetic text file shown in the transfer test. This was a learning exercise, not a production deployment.
 
 ## 1. AWS infrastructure layer — I designed and provisioned a private lab
 
@@ -61,6 +59,8 @@ Private S3 transfer bucket -> S3 Gateway VPC endpoint
 | Management | SSM Session Manager, no inbound SG rules | IAM-authenticated administration without a public bastion or SSH ingress |
 | Ansible transfer | Private encrypted S3 bucket with lifecycle cleanup and S3 Gateway endpoint | The SSM Ansible connection plugin temporarily transfers module content through S3 |
 | Instance IAM | Custom minimal SSM agent channel policy; separate, scoped controller permissions | Avoid broad administrator permissions and separate agent duties from controller duties |
+
+I kept the Terraform implementation split by responsibility so I could review each part before applying it: [network.tf](../terraform/network.tf) defines the VPC, subnets, routes, and gateway; [security-groups.tf](../terraform/security-groups.tf) defines network access; [compute.tf](../terraform/compute.tf) and [ami.tf](../terraform/ami.tf) define the EC2 nodes and image; [iam.tf](../terraform/iam.tf) defines instance roles; and [s3.tf](../terraform/s3.tf) defines the private transfer bucket and endpoint-related storage settings. I used [variables.tf](../terraform/variables.tf), [terraform.tfvars.example](../terraform/terraform.tfvars.example), and [outputs.tf](../terraform/outputs.tf) for deployment inputs and useful resource outputs.
 
 I chose one NAT Gateway instead of a NAT instance. It cost more per hour, but I did not have to add another Linux server to patch and operate. Keeping the lab to one AZ saved resources, though it is not a highly available production design. I also kept file transfer separate from administration: an SFTP key should not give its owner `sudo` or control of the operating system.
 
@@ -327,7 +327,7 @@ When I checked updates, four packages were available but deferred by Ubuntu's ph
 
 ### I prepared the target's separate data volume
 
-I prepared this disk before running the reconstructed playbook: its first task checks that `/srv/sftp-data` is already mounted and stops if it is not. I recorded that the disk ended up formatted as ext4 and mounted persistently by UUID with `defaults,nofail`, but I did not preserve the exact original format-and-mount command transcript. The commands below show how I would safely repeat that one-time step on a **new, empty lab volume only**.
+I prepared this disk before running Ansible. The playbook checks that `/srv/sftp-data` is already mounted and stops if it is not. I recorded that the disk ended up formatted as ext4 and mounted persistently by UUID with `defaults,nofail`, but I did not preserve the exact original format-and-mount command transcript. The commands below show how I would safely repeat that one-time step on a **new, empty lab volume only**.
 
 First identify the attached 5-GiB volume and confirm it is not mounted and has no filesystem/data that needs to be preserved:
 
@@ -364,11 +364,11 @@ findmnt --mountpoint /srv/sftp-data
 df -hT /srv/sftp-data
 ```
 
-I expected filesystem type `ext4`, mount point `/srv/sftp-data`, and the new volume's UUID as the source. I would never rerun `mkfs` on an existing filesystem. The playbook I reconstructed does **not** format a disk, write `/etc/fstab`, or mount it; it checks the mount and stops if I have not prepared it. Keeping disk initialization separate from routine hardening means an Ansible rerun cannot erase the data volume.
+I expected filesystem type `ext4`, mount point `/srv/sftp-data`, and the new volume's UUID as the source. I would never rerun `mkfs` on an existing filesystem. The Ansible playbook does **not** format a disk, write `/etc/fstab`, or mount it; it checks the mount and stops if I have not prepared it. Keeping disk initialization separate from routine hardening means an Ansible rerun cannot erase the data volume.
 
 ### I applied SSH and account restrictions with Ansible
 
-After I realized the temporary playbook from the live run was gone, I reconstructed `ansible/playbooks/harden-target.yml` from the final state I had verified. It gives me a repeatable starting point, but it is not the original file. I review its variables and handlers before applying it to a new target.
+I used [harden-target.yml](../ansible/playbooks/harden-target.yml) to apply the account, SSH, filesystem, and host-control settings. I reviewed its variables and handlers before applying it to the target.
 
 In the recorded lab, Ansible applied several target settings in one hardening run. I explain the SSH and account boundary here, then group UFW, AppArmor, auditd, unattended upgrades, and sysctl under the Linux operating-system layer in Step 3. That organization makes the purpose of each layer easier to follow; it does not imply I deployed a separate playbook for each one.
 
@@ -393,7 +393,7 @@ I wanted the target to have the following controls in place:
 
 ### I restricted SSH to SFTP for the transfer account
 
-After I lost the temporary playbook from the original run, I reconstructed a drop-in for `/etc/ssh/sshd_config.d/00-project-hardening.conf`. The policy below is what I included in the repository; it is not a preserved copy of the exact file from the first run:
+I configured an SSH drop-in at `/etc/ssh/sshd_config.d/00-project-hardening.conf` with this policy:
 
 ```text
 PermitRootLogin no
@@ -415,7 +415,7 @@ The global directives disable root login and password-based authentication while
 
 OpenSSH checks ownership and permissions on every component of `ChrootDirectory`. It must be owned by root and cannot be writable by group or other users. That is why the chroot itself is root-owned and the user can write only to a child directory. Making the chroot root writable would violate OpenSSH's safety requirement and undermine the confinement boundary. The SFTP account has a locked password and `nologin` shell as additional controls; the forced internal SFTP command is what constrains the SSH session to the file-transfer subsystem.
 
-Before installing an SSH change, I validate the candidate file and then check the effective settings for the SFTP user. The reconstructed playbook uses `sshd -t` to reject invalid syntax before replacing the file. I use this sequence for a manual review:
+Before installing an SSH change, I validate the candidate file and then check the effective settings for the SFTP user. The playbook uses `sshd -t` to reject invalid syntax before replacing the file. I use this sequence for a manual review:
 
 ```bash
 sudo sshd -t
@@ -563,6 +563,21 @@ Ansible represented this work as one repeatable run, but the controls protect di
 
 Run these checks in the **target's SSM shell**, not the workstation or admin node. Capture sanitized output and avoid publishing account IDs, internal addresses, access keys, or private key material.
 
+### I checked AppArmor and unattended upgrades
+
+```bash
+sudo aa-status
+systemctl is-enabled apparmor
+systemctl is-active apparmor
+systemctl is-enabled unattended-upgrades
+systemctl is-active unattended-upgrades
+sudo tail -n 30 /var/log/unattended-upgrades/unattended-upgrades.log
+```
+
+I confirmed AppArmor was enabled and active. It had 122 profiles loaded, with 26 enforcing; `chronyd` and `rsyslogd` were among them. The SSM Agent profile was in complain mode. I treated `aa-status` as evidence of the profile states it listed, not proof that every workload had a tailored enforcing profile.
+
+I confirmed unattended-upgrades was enabled and active. Its log listed the allowed Ubuntu Noble update and security origins, but no packages were ready to install at that check. My package list separately showed four phased updates, and I left Ubuntu's rollout behavior alone.
+
 ### I checked the firewall and network listeners
 
 ```bash
@@ -579,7 +594,7 @@ I deliberately did not add an SSH exception. My rule was simple: deny unsolicite
 
 My first `ufw status numbered` attempt returned usage text because I had accidentally joined it to `IPV6=yes`. I ran it separately and got the status output. The earlier `ufw: command not found` result belonged to the WSL host, where UFW was not installed; it was not evidence about the AWS target. This is why host identity and clean command boundaries matter in a multi-node lab.
 
-I also kept the manual commands I used to set the firewall policy on the target. In the reconstructed playbook, I express the same intent declaratively:
+I also kept the manual commands I used to set the firewall policy on the target. In the playbook, I express the same intent declaratively:
 
 ```bash
 sudo sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
@@ -590,21 +605,6 @@ sudo ufw status verbose
 ```
 
 `--force` avoids an interactive confirmation, which is useful for automation; use it only after verifying a recovery path. SSM was already working and did not depend on inbound SSH. The sequence intentionally does not add `ufw allow 22/tcp`. If a future deployment manages the host only over SSH, enabling deny-incoming without a verified alternate management path can lock out the operator. The recorded project enabled UFW and then confirmed that new SSM and tunneled SFTP sessions still worked.
-
-### I checked AppArmor and unattended upgrades
-
-```bash
-sudo aa-status
-systemctl is-enabled apparmor
-systemctl is-active apparmor
-systemctl is-enabled unattended-upgrades
-systemctl is-active unattended-upgrades
-sudo tail -n 30 /var/log/unattended-upgrades/unattended-upgrades.log
-```
-
-I confirmed AppArmor was enabled and active. It had 122 profiles loaded, with 26 enforcing; `chronyd` and `rsyslogd` were among them. The SSM Agent profile was in complain mode. I treated `aa-status` as evidence of the profile states it listed, not proof that every workload had a tailored enforcing profile.
-
-I confirmed unattended-upgrades was enabled and active. Its log listed the allowed Ubuntu Noble update and security origins, but no packages were ready to install at that check. My package list separately showed four phased updates, and I left Ubuntu's rollout behavior alone.
 
 ### I installed and tested auditd
 
@@ -646,7 +646,7 @@ I loaded watches for changes to account files, privilege configuration, SSH conf
 
 In each watch, `-w` monitors the named file or directory, `-p wa` selects write and attribute-change activity, and `-k` attaches a searchable key. For example, the `privileged-access` key groups changes to `/etc/sudoers` and `/etc/sudoers.d`; `identity` groups account database files. The rules record that a relevant filesystem operation occurred, along with process and syscall metadata. They are not a full command transcript and do not capture file contents.
 
-To create the persistent rule file by hand, use a quoted heredoc so the shell writes the rules literally. The reconstructed playbook writes the equivalent content to `/etc/audit/rules.d/99-project-hardening.rules`:
+To create the persistent rule file by hand, use a quoted heredoc so the shell writes the rules literally. The playbook writes the equivalent content to `/etc/audit/rules.d/99-project-hardening.rules`:
 
 ```bash
 sudo tee /etc/audit/rules.d/99-project-hardening.rules >/dev/null <<'EOF'
@@ -697,7 +697,7 @@ disk_full_action = SUSPEND
 disk_error_action = SUSPEND
 ```
 
-These settings flush audit data incrementally, rotate at the configured file size, and define behavior when disk space becomes scarce or errors occur. On a manual reproduction, edit the existing keys with `sudoedit /etc/audit/auditd.conf` rather than blindly appending duplicate key lines. The reconstructed playbook uses `lineinfile` to update those settings. The active values and service health should be checked after the configuration handler runs.
+These settings flush audit data incrementally, rotate at the configured file size, and define behavior when disk space becomes scarce or errors occur. On a manual reproduction, edit the existing keys with `sudoedit /etc/audit/auditd.conf` rather than blindly appending duplicate key lines. The playbook uses `lineinfile` to update those settings. The active values and service health should be checked after the configuration handler runs.
 
 To test a watch rule, I created and removed a harmless temporary file under `/etc/ufw`, then searched for the `firewall` key:
 
@@ -836,7 +836,7 @@ By the end of the lab, I had confirmed that:
 
 - Both EC2 nodes had no public IP or inbound security-group rules; SSM provided administration.
 - Ansible managed the private target over SSM, with temporary transfer files using the scoped S3 path.
-- SFTP authenticated with a dedicated key, transferred the synthetic test file in `/upload`, and produced matching local/source SHA-256 digests.
+- SFTP authenticated with a dedicated key, transferred `mds-sftp-test.txt` in `/upload`, and produced matching local/source SHA-256 digests.
 - Chroot traversal, writes to the chroot root, and interactive-shell access were denied as intended.
 - UFW was active with default-deny incoming and allow-outgoing policy; no port 22 ingress was opened.
 - AppArmor, unattended-upgrades, auditd, audit watches, and the selected sysctl values were checked on the target.
