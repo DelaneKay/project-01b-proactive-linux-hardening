@@ -4,7 +4,7 @@
 - **Problem addressed:** I needed to build a private file-transfer server, restrict the transfer account to its intended job, and harden the Linux host without opening public SSH access.
 - **Outcome:** I provisioned the AWS lab with Terraform, managed the private target through Session Manager, and used Ansible and Linux controls to configure it. The SFTP account could transfer a test text file but could not write at the chroot root or start a shell. Matching SHA-256 hashes confirmed the file survived upload and download intact. After the demonstration, I used `terraform destroy` to remove the lab resources.
 
-This is my account of Project 1B: building and hardening a private SFTP server on AWS, then checking that the access restrictions worked. I used the small `mds-sftp-test.txt` fixture containing `SFTP hardening lab transfer test`; it was a lab test file, not a customer-register CSV. The walkthrough follows the work from local preparation through AWS access, infrastructure, server hardening, validation, and teardown.
+This is my account of Project 1B: building and hardening a private SFTP server on AWS, then checking that the access restrictions worked. I used the small `mds-sftp-test.txt` fixture containing `SFTP hardening lab transfer test`. The walkthrough follows the work from local preparation through AWS access, infrastructure, server hardening, validation, and teardown.
 
 ## The lab scenario
 
@@ -937,7 +937,7 @@ The test file was uploaded into `/upload`.
 
 `get` downloads the remote file to WSL, and `sha256sum` calculates hashes for the original and downloaded copies; matching hashes show the transfer preserved the content. The captured `get` command downloaded it to a different local filename, and `!sha256sum` compared the two copies on WSL. Both digests matched. 
 
-The target-side destination was `/srv/sftp-data/upload/mds-sftp-test.txt`. Inside the chroot, that same location appeared as `/upload/mds-sftp-test.txt`. The content was a test sentence, not a customer-register CSV. The successful transfer proved this file could make the round trip intact.
+The target-side destination was `/srv/sftp-data/upload/mds-sftp-test.txt`. Inside the chroot, that same location appeared as `/upload/mds-sftp-test.txt`. The successful transfer proved this file could make the round trip intact.
 
 ### 4.3 I tested actions the transfer account should be denied
 
