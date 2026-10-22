@@ -143,7 +143,7 @@ Having `aws` installed does not grant access to an AWS account. My first identit
 
 For this lab, I used a dedicated IAM user and a named AWS CLI profile. A profile is the local configuration that selects credentials and settings; the Linux user `devsecops`, IAM user `mds-devsecops-lab`, and CLI profile `mds-devsecops-lab` are separate identities.
 
-For the initial account setup, I signed in with my existing root identity. I would use it to create a separate lab user, enroll MFA, and then sign in as that user with browser-based `aws login`, which supplies short-lived CLI credentials. An authorized IAM Identity Center role can provide this access when one is already available.
+For the initial AWS account setup, I used the AWS account's root user—not the Linux `root` account—to create a separate lab IAM user and enroll MFA. I then signed in as that IAM user with browser-based `aws login`, which supplied short-lived CLI credentials. If an authorized IAM Identity Center role is already available, it can provide the lab access instead.
 
 I ran the identity check before signing in, then started browser sign-in and set the default Region:
 
