@@ -25,34 +25,7 @@ This walkthrough follows the dependencies from the beginning. I explain each too
 | 3. Linux operating system hardening | Check packages and updates → inspect AppArmor → verify the host firewall → load and test audit rules → verify kernel settings → review host health |
 | 4. Validation and cleanup | Verify the server identity → transfer the text file → test denied actions → retain evidence → destroy resources → check the result |
 
-**Starting point:** I began on my Windows workstation, using Ubuntu in WSL and an AWS account I was authorized to use for the lab. Each step names the terminal where its commands belong. The `# My Project 1B proactive Linux hardening journey
-
-- **Core technologies:** AWS, AWS CLI, Terraform, IAM, Systems Manager Session Manager, Ubuntu, Ansible, OpenSSH/SFTP, AppArmor, UFW, and auditd.
-- **Problem addressed:** I needed to build a private file-transfer server, restrict the transfer account to its intended job, and harden the Linux host without opening public SSH access.
-- **Outcome:** I provisioned the AWS lab with Terraform, managed the private target through Session Manager, and used Ansible and Linux controls to configure it. The SFTP account could transfer a test text file but could not write at the chroot root or start a shell. Matching SHA-256 hashes confirmed the file survived upload and download intact. After the demonstration, I used `terraform destroy` to remove the lab resources.
-
-This is my account of Project 1B: building and hardening a private SFTP server on AWS, then checking that the access restrictions worked. I used the small `mds-sftp-test.txt` fixture containing `SFTP hardening lab transfer test`. The walkthrough follows the work from local preparation through AWS access, infrastructure, server hardening, validation, and teardown.
-
-## The lab scenario
-
-I wanted a file-transfer service that could accept a file from an authorized user while keeping the server private and limiting that user's access to the upload area. I built a new AWS lab environment rather than investigating a pre-existing compromised server.
-
-I kept several security principles in mind as I worked. Infrastructure as Code made the cloud design reviewable and repeatable. Private subnets and Session Manager reduced the need to expose SSH to the internet. Least privilege shaped the SFTP account and its chroot boundary. Audit rules and host logs helped me observe security-relevant activity, while SHA-256 checksums let me verify the transferred file's integrity.
-
-I worked from Ubuntu in WSL with Terraform and the AWS CLI, then used IAM and browser-based AWS sign-in to manage the account. Terraform created the AWS resources; Session Manager provided administrative access to the private EC2 target; Ansible applied the server configuration. On the target, I checked Linux services and used AppArmor, UFW, auditd, and kernel settings as part of the hardening work. Finally, I tested SFTP access and compared file hashes before using Terraform to tear down the lab.
-
-
-
-This walkthrough follows the dependencies from the beginning. I explain each tool before using it, identify the terminal for each command, and give a checkpoint before the next phase. Commands are grouped in the order I used them. Repository file links show the configuration alongside the walkthrough.
-
-| Layer | Sequence |
-| --- | --- |
-| 1. AWS infrastructure | Understand automation → prepare WSL → check/install tools → authenticate to AWS → get the project files → inspect AWS → define infrastructure → plan and deploy |
-| 2. Access management and SSH hardening | Confirm SSM connectivity → inspect the target → prepare its disk → prepare the Ansible controller → stage the public key and configuration → review the access policy → apply and check it |
-| 3. Linux operating system hardening | Check packages and updates → inspect AppArmor → verify the host firewall → load and test audit rules → verify kernel settings → review host health |
-| 4. Validation and cleanup | Verify the server identity → transfer the text file → test denied actions → retain evidence → destroy resources → check the result |
-
- and `sftp>` symbols are prompts, not part of the commands, so I left them out when entering them. I worked through one block at a time and fixed errors before moving on.
+**Starting point:** I began on my Windows workstation with Ubuntu in WSL and authorized access to an AWS account for this lab. Each step names the terminal to use. I treated the shell and SFTP prompts as indicators of which terminal I was in, not as text to copy into a command. I worked through one block at a time and fixed errors before moving on.
 
 ## 1. AWS infrastructure layer
 
