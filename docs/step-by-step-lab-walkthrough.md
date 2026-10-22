@@ -46,7 +46,7 @@ uname -r
 
 `whoami` identifies my local Linux user, `hostname` identifies the machine, and the last two commands identify the operating system and kernel. My workstation reported a Microsoft WSL2 kernel. This was my local computer; no EC2 instance existed yet.
 
-I initially worked as root. I created an ordinary account so routine commands would run without full Linux privileges, with `sudo` available when necessary. **Run this next block only if you are currently root and the `devsecops` account does not already exist.** If you already have a normal sudo-enabled WSL account, keep using it.
+I initially worked as root, so I created a regular account for routine commands and added it to the `sudo` group for tasks that needed elevation. I ran this setup because I was root and `devsecops` did not exist; if your WSL account already has `sudo` access, continue with that account.
 
 ```bash
 adduser devsecops
