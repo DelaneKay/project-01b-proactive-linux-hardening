@@ -57,12 +57,14 @@ su - devsecops
 
 `adduser` creates the local account and asks for its password. `usermod -aG sudo` adds it to the sudo group while preserving other groups. `id devsecops` confirms the account and memberships; `su -` switches to that user's login environment. 
 
+Before installing or using the AWS tools, I checked that I had switched out of root and could still elevate when a system-level change required it. Running routine work as an ordinary user limits unnecessary root access; `sudo` remains available for tasks that need it.
+
 ```bash
 whoami
 sudo whoami
 ```
 
-**Checkpoint:** the first command identifies my ordinary account; the second confirms that `sudo` can elevate privileges. This Linux account is separate from the AWS identity I configure later.
+**Checkpoint:** `whoami` should show my ordinary WSL account, while `sudo whoami` should return `root`. That confirmed the local Linux privileges were set up as intended. This account is separate from the AWS identity I configure next.
 
 ### 1.2 I checked Terraform and AWS CLI before trying to use them
 
