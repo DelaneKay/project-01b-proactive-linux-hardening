@@ -177,6 +177,7 @@ Cost was also part of the design decision. The journal's October 2026 estimate p
 ```bash
 terraform apply
 terraform output
+cd ..
 ```
 
 Terraform outputs provide the admin and target instance IDs and transfer bucket name. Keep those values in the shell or an untracked local file; do not paste live identifiers into public documentation. Wait until both nodes are registered as SSM managed instances before proceeding. If a node does not appear, check its instance profile, SSM Agent status, route to the required SSM endpoints, and NAT or VPC endpoint path instead of opening inbound SSH as a shortcut.
@@ -187,7 +188,7 @@ From the workstation, start a session to the admin node:
 
 ```bash
 aws ssm start-session \
-  --target "$(terraform output -raw admin_instance_id)" \
+  --target "$(terraform -chdir=terraform output -raw admin_instance_id)" \
   --profile "$AWS_PROFILE" --region us-east-1
 ```
 
@@ -218,7 +219,25 @@ This is the **instance agent** permission set, not the human operator policy and
 
 ### 3.4 Configure inventory and the SFTP public key
 
-On the admin node, copy `ansible/inventory/hosts.example.yml` to an untracked `hosts.yml`. Set the target instance ID, Region, S3 transfer bucket, and SFTP public-key path. Keep account-specific inventory out of version control.
+The EC2 nodes did not need Git or GitHub authentication. For a reproduction from this repository, stage the reviewed Ansible files in the private transfer bucket, then retrieve them on the admin node. Run the first block from the workstation at the repository root, and the second inside the admin SSM session:
+
+```bash
+# Workstation: upload the Ansible source tree, excluding any local secret inventory.
+aws s3 cp ansible/ \
+  "s3://$(terraform -chdir=terraform output -raw ansible_transfer_bucket)/project-1b/ansible/" \
+  --recursive --exclude 'inventory/hosts.yml' \
+  --profile "$AWS_PROFILE" --region us-east-1
+
+# Admin EC2: retrieve only the reviewed project Ansible files.
+mkdir -p ~/project-1b
+aws s3 cp "s3://YOUR_TRANSFER_BUCKET/project-1b/ansible/" \
+  ~/project-1b/ansible/ --recursive --region us-east-1
+cd ~/project-1b
+```
+
+Replace `YOUR_TRANSFER_BUCKET` in the admin command with the Terraform output. This is a transfer mechanism for the private lab, not a reason to make the bucket public. The operator's S3 action uses its authenticated profile; the admin node uses its instance role. The role's object permissions should be limited to this bucket/prefix. Remove temporary objects at teardown.
+
+On the admin node, copy `ansible/inventory/hosts.example.yml` to an untracked `ansible/inventory/hosts.yml`. Set the target instance ID, Region, transfer bucket, and SFTP public-key path. Keep account-specific inventory out of version control. Install the declared collections and the Ansible/SSM connection prerequisites before running the playbook.
 
 The dedicated Ed25519 SFTP key pair was generated on the operator workstation. Its private key remained there; only the public key was uploaded as `sftpdata/sftpdata.pub` to the private transfer bucket. The admin node retrieved that public key to `/tmp/sftpdata.pub` using its instance role and supplied it to Ansible. Do not place the private key in S3, on the target, in Terraform state, or in the repository.
 
@@ -306,6 +325,12 @@ Copy the UUID from `blkid`. Check for an existing entry to avoid adding duplicat
 
 ```text
 UUID=REPLACE_WITH_FILESYSTEM_UUID /srv/sftp-data ext4 defaults,nofail 0 2
+```
+
+The duplicate check is:
+
+```bash
+grep -nF '/srv/sftp-data' /etc/fstab || true
 ```
 
 Mount and verify before proceeding:
