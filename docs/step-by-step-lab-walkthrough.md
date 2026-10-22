@@ -329,7 +329,7 @@ PY
 
 The password update succeeded. I then returned to browser sign-in with the named `mds-devsecops-lab` profile and used `us-east-1` for subsequent AWS checks.
 
-My `aws cloudtrail describe-trails` check returned no trails, while `aws cloudtrail lookup-events` returned recent management events for my lab user. I then narrowed the project back to Linux hardening and did not proceed with the proposed GuardDuty inventory.
+With the lab profile working, I checked the account’s audit visibility before creating infrastructure. CloudTrail helps me review management actions taken in AWS, so I first checked whether the account had a configured trail and then queried its recent event history. `aws cloudtrail describe-trails` returned no trails, but `aws cloudtrail lookup-events` still showed recent management events for my lab user. That gave me a basic view of recent activity without setting up a trail. I kept the project focused on Linux hardening and did not continue with the proposed GuardDuty inventory.
 
 ### 1.4 I created the Terraform files in my local project directory
 
