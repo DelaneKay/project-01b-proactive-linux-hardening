@@ -289,7 +289,7 @@ aws configure get region --profile mds-devsecops-lab
 
 I selected the lab IAM user in the browser. `get-caller-identity` confirmed the active principal, and the Region check returned `us-east-1`. That completed the named CLI profile setup.
 
-Later, I needed to reset the AWS console password for `mds-devsecops-lab`. Signing in again with `aws login` would only refresh the CLI session; it would not change the console password. I used my `root-recovery` profile, which had the administrator access needed to update the IAM user's password. The script prompts for the new password without displaying it, checks the confirmation, and sends the update through a restricted temporary file that is removed when the script exits.
+Later, I needed to reset the AWS console password for `mds-devsecops-lab`. Signing in again with `aws login` would refresh the CLI session, not change the console password. I used the `root-recovery` profile because it had the administrator access needed to update the IAM user's password. The block below performs that reset: it prompts for a new password and confirmation without displaying them, sends the request to IAM through a restricted temporary file, and removes the file when it exits.
 
 ```bash
 (
