@@ -333,7 +333,7 @@ With the lab profile working, I checked whether AWS activity would be traceable 
 
 ### 1.4 I created the Terraform files in my local project directory
 
-I worked in `/home/devsecops/mds-aws-linux-hardening-1b`. `cd` enters that directory and `pwd` confirms the location. I created and reviewed the Terraform configuration locally; I did not clone this portfolio repository to start the original lab. GitHub publication came after the demonstration.
+I created a working directory for the lab at `/home/devsecops/mds-aws-linux-hardening-1b` and used it to build and check the Terraform configuration before deploying anything. I confirmed I was in the right place with `cd` and `pwd`. The files were first created on my WSL machine; after the lab was complete, I organized and published them in this GitHub repository.
 
 ```bash
 cd ~/mds-aws-linux-hardening-1b
