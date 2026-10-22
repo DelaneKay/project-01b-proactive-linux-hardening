@@ -261,7 +261,7 @@ finally:
 PY
 ```
 
-I then verified that IAM had attached the authenticator:
+After enrolling the device, I checked how many MFA devices IAM listed for the new user:
 
 ```bash
 aws iam list-mfa-devices \
@@ -270,14 +270,14 @@ aws iam list-mfa-devices \
   --output text
 ```
 
-The result was `1`, confirming that IAM had attached one MFA device. I deleted the QR image and kept passwords and codes out of the repository. I then checked the root identity and signed out:
+IAM returned `1`, confirming that the new user had one MFA device. I deleted the QR image and kept passwords and codes out of the repository. Before switching to the lab user, I checked the active AWS identity and signed out of the root session:
 
 ```bash
 aws sts get-caller-identity --query 'Arn' --output text
 aws logout
 ```
 
-`get-caller-identity` confirmed the root session before sign-out, and `aws logout` removed its cached CLI credentials. `aws configure get region` only reads the selected Region; `aws configure sso` is a separate temporary-credential method. [AWS documents this browser-based temporary-credential flow](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html).
+The ARN identified the root session, and `aws logout` removed its cached CLI credentials. `aws configure get region` only reads the selected Region; `aws configure sso` is a separate temporary-credential method. [AWS documents this browser-based temporary-credential flow](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html).
 
 I signed in from WSL with the lab profile, then checked the active identity and default Region:
 
