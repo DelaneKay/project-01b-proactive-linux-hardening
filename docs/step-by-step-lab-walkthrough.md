@@ -340,7 +340,7 @@ cd ~/mds-aws-linux-hardening-1b
 pwd
 ```
 
-I began with [versions.tf](../terraform/versions.tf), [variables.tf](../terraform/variables.tf), and my local `terraform.tfvars`. I initialized the AWS provider and validated the configuration as I added it. The repository now organizes those files under `terraform/`, but the original working directory held the `.tf` files directly. That distinction matters when reading the historical commands below.
+With the workspace ready, I started by defining Terraform’s requirements and the inputs for the lab. [versions.tf](../terraform/versions.tf) records the Terraform and AWS provider versions, while [variables.tf](../terraform/variables.tf) defines the values the configuration can accept; my local `terraform.tfvars` supplied the lab-specific values. I initialized the AWS provider and validated the configuration as I built it. The commands below reflect the original layout, where the `.tf` files were directly in the working directory; they are now grouped under `terraform/` in this repository.
 
 ### 1.5 I inspected AWS before choosing the lab's network, image, and storage
 
