@@ -35,7 +35,7 @@ Automation is central to DevSecOps because I need changes I can review, repeat, 
 
 Before touching AWS, I needed to know which Linux environment and user I was working in.
 
-**Run in: local WSL Ubuntu.**
+I ran these checks in the Ubuntu terminal on my WSL workstation:
 
 ```bash
 whoami
