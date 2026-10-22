@@ -382,9 +382,9 @@ The VPC query showed that my existing default VPC used `172.31.0.0/16`. I was cr
 
 I checked the account’s EBS encryption defaults before setting up storage. Default encryption was disabled, although `alias/aws/ebs` was available as the default key. To make sure the lab’s root and SFTP data volumes were encrypted, I enabled encryption explicitly in [compute.tf](../terraform/compute.tf). This protects data stored on the EBS volumes; Linux permissions control access to files after the volumes are mounted.
 
-**Problem I encountered:** my first VPC query returned `OptInRequired`. I paused instead of guessing a network range. A later retry returned the default VPC successfully; I did not establish a definite cause for the earlier error.
+**Problem I encountered:** my first VPC query failed with `OptInRequired`, so I stopped and retried instead of choosing a range without checking the existing network. The retry returned the default VPC details, although I never established what caused the first error.
 
-**Checkpoint:** the chosen CIDRs, AZ, instance sizes, and image are supported in the account. If your results differ, adjust the input values in Phase 1.7 before planning.
+**Checkpoint:** I had now checked the existing VPC range, assigned a separate CIDR to the lab VPC, and confirmed that the selected Availability Zone, instance sizes, and Ubuntu image were available. When repeating the lab, check these values in your own account and adjust the inputs in Phase 1.7 if needed.
 
 ### 1.6 I translated those checks into the AWS design and Terraform files
 
