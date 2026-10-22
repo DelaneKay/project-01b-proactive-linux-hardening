@@ -135,7 +135,7 @@ ansible --version
 
 The check showed that Ansible was not installed in WSL. I used WSL for Terraform and the AWS CLI, and ran Ansible from the private admin EC2 instance, which served as the controller for the target.
 
-**Checkpoint:** Terraform and AWS CLI work as my ordinary WSL user. Ansible is not installed on WSL; I will set up the controller tools on the admin EC2. I have not yet authenticated to AWS or created any resources.
+**Checkpoint:** Terraform and AWS CLI were ready in WSL. I had not signed in to AWS or created any resources yet, so my next step was to establish an authorized AWS identity.
 
 ### 1.3 I established an AWS identity before using a named profile
 
