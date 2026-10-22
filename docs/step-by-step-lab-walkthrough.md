@@ -378,7 +378,7 @@ aws ec2 get-ebs-default-kms-key-id \
   --region us-east-1
 ```
 
-The VPC query showed my existing default VPC used `172.31.0.0/16`, so I chose `10.20.0.0/16` for the lab. The AZ/type checks supported the selected `us-east-1a`, `t3.small`, and `t3.micro` combination. I verified the image was available, `x86_64`, and owned by Canonical (`099720109477`). Its ID can change as Ubuntu publishes images; [ami.tf](../terraform/ami.tf) performs the SSM parameter lookup for deployment.
+The VPC query showed that my existing default VPC used `172.31.0.0/16`. I was creating a separate VPC for this lab, so `10.20.0.0/16` is the address range I assigned to the new lab VPC; it is not an address range that the existing default VPC already used. I divided that dedicated range into the NAT, admin, and target subnets in the Terraform network configuration. The Availability Zone and instance-type checks supported `us-east-1a`, `t3.small`, and `t3.micro`. I also confirmed the Ubuntu image was available, `x86_64`, and owned by Canonical (`099720109477`). Its ID can change as Ubuntu publishes images; [ami.tf](../terraform/ami.tf) looks it up through AWS Systems Manager Parameter Store during deployment.
 
 The EBS default-encryption query returned `false`; the default key was `alias/aws/ebs`. I therefore explicitly enabled encryption on my project volumes in [compute.tf](../terraform/compute.tf), rather than relying on an account default. Encryption protects stored volume data, while Linux permissions will control what a logged-in user can access.
 
