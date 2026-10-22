@@ -133,7 +133,7 @@ terraform version
 ansible --version
 ```
 
-The Ansible check returned `command not found`. After clarifying the three-machine design, I kept Ansible on the AWS admin node rather than making WSL the controller.
+The check showed that Ansible was not installed in WSL. I used WSL for Terraform and the AWS CLI, and ran Ansible from the private admin EC2 instance, which served as the controller for the target.
 
 **Checkpoint:** Terraform and AWS CLI work as my ordinary WSL user. Ansible is not installed on WSL; I will set up the controller tools on the admin EC2. I have not yet authenticated to AWS or created any resources.
 
