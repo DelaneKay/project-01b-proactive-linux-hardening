@@ -49,6 +49,17 @@ Private S3 transfer bucket -> S3 Gateway VPC endpoint
 
 The NAT Gateway was a deliberate lab trade-off: it costs more per hour than a NAT instance, but avoids adding another Linux server to patch and operate. One NAT Gateway in one AZ is a cost-saving lab design, not a highly available production pattern. The SFTP account was also deliberately separate from the administrative identity: a file-transfer key should not imply `sudo` or operating-system control.
 
+### 2.1 Follow the management and data paths
+
+There were two distinct uses of SSM in this design:
+
+1. **Administration:** the workstation asked Systems Manager to start a shell session to the admin or target node. The SSM Agent on the instance opened outbound control/data channels; the operator did not connect to port 22 on the instance from the Internet.
+2. **SFTP test:** the workstation asked SSM to forward local port `2222` to target port `22`. The SFTP client connected to `127.0.0.1:2222`, while the target still handled a normal SSH/SFTP protocol session locally.
+
+Ansible used a third, related path: its controller process on the admin node asked SSM to run commands on the target, and its connection plugin staged temporary module files through the private S3 bucket. The S3 Gateway endpoint gave VPC traffic a path to S3 without sending that bucket traffic through a public internet route. These mechanisms solve different problems: SSM provides an authenticated management channel, S3 stages Ansible payloads, and the target's OpenSSH server enforces the Linux SFTP policy.
+
+The security groups and host firewall are also separate enforcement layers. A listener on target port 22 is necessary for SFTP, but does not by itself make the service reachable from an untrusted network. The EC2 security group had no inbound rules; UFW on the target added a host-level deny-incoming policy. SSM port forwarding was the intentionally authorized path used in the lab.
+
 ## 3. Prepare and provision the AWS lab
 
 ### 3.1 Confirm the operator identity and configuration
@@ -170,6 +181,40 @@ The hardening included these outcomes:
 5. **Key-only access:** `/home/sftpdata/.ssh` was mode `0700`; `authorized_keys` was owned by the transfer identity and mode `0600`. Password login was disabled for this SFTP identity.
 6. **Firewall and host controls:** UFW was configured with deny incoming, allow outgoing, IPv6 enabled, and low logging. AppArmor and unattended-upgrades service state was checked. Auditd policy and rules, plus persistent kernel/network sysctls, were installed.
 
+### 5.1 Understand the SSH policy that enforces SFTP-only access
+
+The reconstructed playbook installs a dedicated drop-in file at `/etc/ssh/sshd_config.d/00-project-hardening.conf`. Its intended policy is shown below. This excerpt documents the repository's reconstructed configuration, not a preserved copy of the temporary file from the original run:
+
+```text
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+X11Forwarding no
+Match Group sftp-only
+    ChrootDirectory /srv/sftp-data
+    ForceCommand internal-sftp -d /upload
+    AllowTcpForwarding no
+    PermitTunnel no
+    PermitTTY no
+    X11Forwarding no
+Match all
+```
+
+The global directives disable root login and password-based authentication while allowing public-key authentication. The group match applies the chroot and `internal-sftp` forced command to members of `sftp-only`; `-d /upload` makes the client start in the writable upload directory. Forwarding, tunnel, TTY, and X11 capabilities are disabled for the restricted account. `Match all` closes the conditional block so later SSH settings are not accidentally scoped to that group.
+
+OpenSSH checks ownership and permissions on every component of `ChrootDirectory`. It must be owned by root and cannot be writable by group or other users. That is why the chroot itself is root-owned and the user can write only to a child directory. Making the chroot root writable would violate OpenSSH's safety requirement and undermine the confinement boundary. The SFTP account has a locked password and `nologin` shell as additional controls; the forced internal SFTP command is what constrains the SSH session to the file-transfer subsystem.
+
+Before installing an SSH change, validate the candidate file and then validate the effective configuration. The playbook's copy task uses `sshd -t` as its validation command, so an invalid file is rejected before replacement. A safe manual review sequence is:
+
+```bash
+sudo sshd -t
+sudo sshd -T -C user=sftpdata,host=localhost,addr=127.0.0.1 \
+  | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication|forcecommand|chrootdirectory|allowtcpforwarding|permittty)'
+```
+
+`sshd -t` checks syntax. `sshd -T -C` evaluates the effective settings for a connection context, including `Match` rules; it is stronger evidence than reading a file in isolation. During the lab, the first effective-config query was blocked because `/run/sshd` was missing. Creating that runtime directory allowed the check to proceed. If the command fails on another system, inspect its exact error and service/runtime state before changing authentication policy.
+
 The data device was confirmed before formatting. Formatting an unverified block device is destructive; on a reproduction, identify the attached volume and confirm it is the intended empty lab disk before issuing any filesystem command. The playbook should be reviewed for idempotence and for SSH configuration validation (`sshd -t`) before installation. Do not add an inbound UFW or security-group allow rule for TCP 22; SSM provides the management and test tunnel.
 
 ## 6. Validate SFTP's allowed and denied behavior
@@ -248,6 +293,8 @@ sudo ip6tables -S
 
 The final UFW state was active, logging low, default deny incoming, allow outgoing, and disabled routed traffic. IPv6 support was enabled in UFW configuration. No explicit inbound SSH allow rule was added. The systemd socket/listener inventory still showed local SSH on port 22, but the EC2 security groups had no inbound rules. A process listening on an interface and a port reachable from the Internet are different facts; check both host and cloud network controls.
 
+The firewall change intentionally did not add an SSH exception. That preserved a simple rule: unsolicited inbound traffic is denied by the host, while the lab's management and SFTP test use SSM. Outbound traffic remained allowed so the instance could use its expected update and management paths. UFW's “active” status confirms it is enforcing its configured policy; it does not prove that every cloud route or security group is correct. Conversely, the earlier `iptables -S` output showing ACCEPT base policies was collected before UFW was enabled and must not be used as the final firewall result. The final evidence used UFW status and successful SSM/SFTP tests together.
+
 The first `ufw status numbered` attempt returned usage text because the command had accidentally been concatenated with `IPV6=yes`. Re-running it alone produced the status output. The earlier `ufw: command not found` result belonged to the WSL host, where UFW was not installed; it was not evidence about the AWS target. This is why host identity and clean command boundaries matter in a multi-node lab.
 
 ### 7.2 AppArmor and unattended upgrades
@@ -290,6 +337,19 @@ The active rules watched identity, privilege, SSH, and firewall configuration pa
 -w /etc/ssh/sshd_config.d -p wa -k ssh-config
 -w /etc/ufw -p wa -k firewall
 ```
+
+In each watch, `-w` monitors the named file or directory, `-p wa` selects write and attribute-change activity, and `-k` attaches a searchable key. For example, the `privileged-access` key groups changes to `/etc/sudoers` and `/etc/sudoers.d`; `identity` groups account database files. The rules record that a relevant filesystem operation occurred, along with process and syscall metadata. They are not a full command transcript and do not capture file contents.
+
+Useful focused queries after making an authorized configuration change are:
+
+```bash
+sudo ausearch -k identity -ts today -i
+sudo ausearch -k privileged-access -ts today -i
+sudo ausearch -k ssh-config -ts today -i
+sudo ausearch -k firewall -ts today -i
+```
+
+`-i` asks `ausearch` to interpret numeric fields into human-readable values; preserve the raw event when exact syscall data matters. Review the event's `SYSCALL`, `PATH`, `PROCTITLE`, `auid`, `uid`, `exe`, and `key` fields together. In this lab's SSM-root context, `auid=unset` meant the event did not tie itself to the human IAM caller. Correlate it with AWS SSM session/API records if attribution is required; do not claim auditd alone identified that person.
 
 The journal recorded audit status `enabled 1`, `failure 1`, backlog limit 8192, and zero lost events at the status checks. `augenrules --check` reported `No change`, meaning the generated rules matched the source rules at that point. The configured log policy used asynchronous incremental flush, rotation at 8 MiB, five logs, and suspend actions for admin-space, disk-full, and disk-error conditions.
 
@@ -342,6 +402,24 @@ sudo sysctl \
 
 Recorded final values included ASLR `2`; dmesg and kernel-pointer restrictions `1`; protected hardlinks and symlinks `1`; IPv4 forwarding `0`; redirect acceptance `0`; redirect sending `0`; source routing `0`; reverse-path filtering `2`; TCP syncookies `1`; and IPv6 redirect/source-route acceptance `0`. The effective values for `all`, `default`, and `ens5` were checked separately because an `all` value alone does not guarantee an interface-specific setting is correct.
 
+The controls address different kernel/network risks:
+
+| Setting | Recorded value | Intended effect |
+| --- | ---: | --- |
+| `kernel.randomize_va_space` | `2` | Enables full address-space layout randomization for supported mappings |
+| `kernel.dmesg_restrict` | `1` | Restricts access to kernel logs that can reveal sensitive system details |
+| `kernel.kptr_restrict` | `1` | Reduces exposure of kernel pointer addresses through proc interfaces |
+| `fs.protected_hardlinks`, `fs.protected_symlinks` | `1` | Add ownership checks against unsafe hard-link and symlink patterns in sticky directories |
+| `net.ipv4.ip_forward` | `0` | Prevents this host from routing IPv4 packets between interfaces |
+| IPv4 `accept_redirects` | `0` | Ignores redirects that could alter a host's routing behavior |
+| IPv4 `send_redirects` | `0` | Does not advertise alternate routes to other hosts |
+| IPv4 `accept_source_route` | `0` | Rejects packets whose source specifies a route through the network |
+| `net.ipv4.conf.*.rp_filter` | `2` | Uses loose reverse-path validation; this is more tolerant of asymmetric routes than strict mode `1` |
+| `net.ipv4.tcp_syncookies` | `1` | Enables SYN-cookie protection when the kernel's SYN backlog is under pressure |
+| IPv6 redirect/source-route acceptance | `0` | Disables the corresponding IPv6 route-control behaviors |
+
+These values reduce selected attack surfaces; they do not replace security groups, UFW, patching, or workload-specific network design. `rp_filter=2` was intentionally loose mode, not strict mode. A real deployment should validate settings against its routing design, VPNs, and asymmetric paths before adopting them wholesale.
+
 ### 7.5 Logs, updates, and unit health
 
 ```bash
@@ -352,6 +430,8 @@ systemctl --failed --no-pager
 ```
 
 `rsyslog` was active; the journal occupied 38.3 MiB at the recorded check. The warning query included EC2/virtual-hardware and CPU vulnerability notices as well as a UFW block event. These outputs should be triaged in context rather than treated as a list of confirmed exploitable issues. The final failed-unit check returned `0 loaded units listed`.
+
+The warning review included boot-time hardware/virtualization messages, chrony clock correction, IRQ affinity warnings, and a `[UFW BLOCK]` entry. The block entry showed that the host firewall logged a packet it denied; it was not evidence that the packet reached the SFTP process. The MDS and MMIO stale-data kernel notices reported “Clear CPU buffers attempted, no microcode; SMT Host state unknown” in the guest vulnerability files. Record these as platform/runtime observations and interpret them with the cloud provider's shared-responsibility model; the guest's view cannot establish the underlying host's complete mitigation state.
 
 The target's CPU vulnerability files reported that clearing CPU buffers had been attempted but no microcode was present and SMT host state was unknown. This was recorded as platform-level observation, not as evidence that the Linux hardening controls failed. The target was a `t3.micro` EC2 instance; its guest-visible hardware/kernel report is not equivalent to a direct assessment of the underlying AWS host.
 
