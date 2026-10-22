@@ -57,36 +57,31 @@ sudo whoami
 ```bash
 terraform version
 aws --version
-command -v terraform
-command -v aws
 ```
 
-Terraform manages the infrastructure files. The AWS Command Line Interface (CLI) lets me authenticate and query AWS from the terminal. The version commands show whether they run; `command -v` shows which executable the shell finds.
+Terraform manages the infrastructure files. The AWS Command Line Interface (CLI) lets me authenticate and query AWS from the terminal. The version commands showed whether the tools were available to my current user.
 
 My Terraform check returned version `1.16.6`. AWS CLI was available under a different user but initially returned `command not found` for `devsecops`. I learned that installing a tool under root does not make a user-local installation available to every account.
 
 Terraform was already installed, so I did not install it again.
 
-For the missing AWS CLI, I used AWS's user-local installation method. The [AWS installation guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) describes this installer, its verification, and its update options.
+For the missing AWS CLI, I used AWS's user-local `v2/install.sh` installer. My journal records version `2.38.3` and the executable under `/home/devsecops/.local/bin`. I checked that executable directly:
 
 ```bash
-mkdir -p "$HOME/.local/tmp/project-1b-tools"
-curl -fsSL https://awscli.amazonaws.com/v2/install.sh \
-  -o "$HOME/.local/tmp/project-1b-tools/awscli-install.sh"
-bash "$HOME/.local/tmp/project-1b-tools/awscli-install.sh"
+/home/devsecops/.local/bin/aws --version
+```
+
+I added the following PATH entry to `~/.bashrc`, reloaded it, and checked the tools again:
+
+```bash
 export PATH="$HOME/.local/bin:$PATH"
-aws --version
-```
-
-My installation reported AWS CLI `2.38.3`. The executable was under `~/.local/bin`, so I made that location available in new Bash sessions as well:
-
-```bash
-grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc \
-  || printf '%s\n' 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
-terraform version
 aws --version
+terraform version
+ansible --version
 ```
+
+The Ansible check returned `command not found`. After clarifying the three-machine design, I kept Ansible on the AWS admin node rather than making WSL the controller.
 
 **Checkpoint:** both version commands work as my ordinary WSL user. I have installed tools, but I have not yet authenticated to AWS or created any resources.
 
@@ -97,6 +92,16 @@ Having `aws` installed does not grant access to an AWS account. My first identit
 A **profile** is a named AWS CLI configuration. The Linux user `devsecops`, the IAM user `mds-devsecops-lab`, and the CLI profile `mds-devsecops-lab` are different things even though two names match.
 
 For my lab, I created a dedicated IAM user, enabled console access and MFA, then used browser-based `aws login` to obtain temporary CLI credentials. If your organization already provides an authorized IAM Identity Center role, use that existing access and its profile instead of creating a second IAM identity.
+
+My first identity check had no credentials. I then used the default browser-login flow for account bootstrap and selected the lab Region:
+
+```bash
+aws sts get-caller-identity
+aws login
+aws configure set region us-east-1
+```
+
+The Region command sets a location, not an access key. I confirmed the initial authenticated identity was root before creating the separate lab user.
 
 I initially used my already-authenticated root identity for account bootstrap, then moved to the dedicated IAM user. These are the IAM commands recorded in my journal, before the named lab profile existed:
 
@@ -145,16 +150,75 @@ aws iam create-login-profile \
 ```
 
 
-I created a virtual MFA device and scanned its private QR image. Opening it with `explorer.exe` failed in WSL, so I converted its path and opened that path in Windows File Explorer:
+I created a virtual MFA device and scanned its private QR image. My first attempt to open the image from WSL failed with `explorer.exe: command not found`:
+
+```bash
+explorer.exe "$(wslpath -w "$HOME/.aws/mds-devsecops-lab-mfa.png")"
+```
+
+I used this recorded workaround and opened the returned path in Windows File Explorer:
 
 ```bash
 wslpath -w /home/devsecops/.aws/mds-devsecops-lab-mfa.png
 ```
 
-I loaded the device serial, entered two consecutive codes through hidden prompts, and then verified enrollment:
+After switching back to `devsecops`, I reloaded the device serial in that shell:
 
 ```bash
-aws iam list-mfa-devices --user-name mds-devsecops-lab --query 'length(MFADevices)' --output text
+export mfa_serial="$(aws iam list-virtual-mfa-devices \
+  --query "VirtualMFADevices[?contains(SerialNumber, 'mds-devsecops-lab')].SerialNumber | [0]" \
+  --output text)" && printf 'MFA device serial loaded for enrollment.\n'
+```
+
+I entered two consecutive authenticator codes through hidden prompts. The temporary input file kept them out of the command line and was removed afterward:
+
+```bash
+python3 - <<'PY'
+import getpass
+import json
+import os
+import subprocess
+import tempfile
+
+serial = os.environ.get("mfa_serial")
+if not serial:
+    raise SystemExit("mfa_serial is not available. Reload it first in this terminal.")
+
+code1 = getpass.getpass("First authenticator code (hidden): ")
+code2 = getpass.getpass("Next code after it changes (hidden): ")
+
+payload = {
+    "UserName": "mds-devsecops-lab",
+    "SerialNumber": serial,
+    "AuthenticationCode1": code1,
+    "AuthenticationCode2": code2,
+}
+
+fd, path = tempfile.mkstemp(prefix="mfa-enroll-", suffix=".json")
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(payload, f)
+    result = subprocess.run(
+        ["aws", "iam", "enable-mfa-device", "--cli-input-json", f"file://{path}"],
+        check=False,
+    )
+    raise SystemExit(result.returncode)
+finally:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+PY
+```
+
+I then verified enrollment with AWS:
+
+```bash
+aws iam list-mfa-devices \
+  --user-name mds-devsecops-lab \
+  --query 'length(MFADevices)' \
+  --output text
 ```
 
 The result was `1`. I deleted the QR image after enrollment and kept all passwords and codes out of the repository. I then checked the old identity and signed it out:
@@ -219,16 +283,13 @@ PY
 
 `getpass` hides both entries, `umask 077` keeps the temporary file private, and `trap` removes it when the subshell exits. `PasswordResetRequired: False` means this replacement does not force another password change at next sign-in. Afterward I returned to `aws login --profile mds-devsecops-lab` and verified the IAM user's identity before continuing.
 
-To make the next AWS commands use the same profile and Region in this terminal:
-
-```bash
-export AWS_PROFILE=mds-devsecops-lab
-export AWS_REGION=us-east-1
-export AWS_DEFAULT_REGION=us-east-1
-aws sts get-caller-identity
-```
+I used the named `mds-devsecops-lab` profile and `us-east-1` explicitly for the subsequent AWS checks.
 
 **Checkpoint:** I know which AWS account, principal, and Region the commands will use. No infrastructure has been created yet.
+
+Before moving into the infrastructure design, I also reviewed the existing $50 monthly budget. The journal records calls to `aws budgets describe-budgets`, `describe-notifications-for-budget`, and `describe-subscribers-for-notification`. It confirmed email subscribers for the three notifications; I did not change the budget. The full original command arguments were not retained.
+
+The recorded `aws cloudtrail describe-trails` check returned no trails, while `aws cloudtrail lookup-events` returned recent management events for my lab user. I then narrowed the project back to Linux hardening. The proposed GuardDuty inventory was not recorded as completed.
 
 ### 1.4 I created the Terraform files in my local project directory
 
@@ -247,36 +308,38 @@ I had working tools, credentials, and source files. Next I needed facts to infor
 
 **Run in: local WSL, with the profile from Phase 1.3. These are read-only queries.**
 
+I checked existing VPCs, available zones, and offerings for both T2 and T3 before selecting the network and instance sizes. The journal retains those results; the complete original query arguments are not preserved.
+
+The following AMI and encryption commands are preserved in the journal:
+
 ```bash
-# Check existing VPC ranges to avoid overlap with the proposed lab VPC.
-aws ec2 describe-vpcs \
-  --query 'Vpcs[].{VpcId:VpcId,Cidr:CidrBlock,Default:IsDefault}' \
-  --output table --profile "$AWS_PROFILE" --region us-east-1
-
-# Check AZs and confirm the chosen EC2 sizes are offered in the selected AZ.
-aws ec2 describe-availability-zones \
-  --query 'AvailabilityZones[].ZoneName' --output table \
-  --profile "$AWS_PROFILE" --region us-east-1
-aws ec2 describe-instance-type-offerings \
-  --location-type availability-zone \
-  --filters Name=location,Values=us-east-1a Name=instance-type,Values=t3.micro,t3.small \
-  --query 'InstanceTypeOfferings[].InstanceType' --output table \
-  --profile "$AWS_PROFILE" --region us-east-1
-
-# Resolve Canonical's current Ubuntu 24.04 x86-64 gp3 AMI, then verify its metadata.
-AMI_ID="$(aws ssm get-parameter \
+aws ssm get-parameter \
   --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id \
-  --query 'Parameter.Value' --output text \
-  --profile "$AWS_PROFILE" --region us-east-1)"
-aws ec2 describe-images --image-ids "$AMI_ID" \
-  --query 'Images[].{ImageId:ImageId,Name:Name,OwnerId:OwnerId,Architecture:Architecture,State:State,RootDeviceType:RootDeviceType}' \
-  --output table --profile "$AWS_PROFILE" --region us-east-1
+  --query 'Parameter.Value' \
+  --output text \
+  --profile mds-devsecops-lab \
+  --region us-east-1
+```
 
-# Inspect defaults; Terraform still explicitly sets encrypted = true.
+```bash
+aws ec2 describe-images \
+  --image-ids ami-02a9cdd4e98bc3c78 \
+  --query 'Images[].{ImageId:ImageId,Name:Name,OwnerId:OwnerId,Architecture:Architecture,CreationDate:CreationDate,State:State,RootDeviceType:RootDeviceType,VirtualizationType:VirtualizationType}' \
+  --output table \
+  --profile mds-devsecops-lab \
+  --region us-east-1
+```
+
+```bash
 aws ec2 get-ebs-encryption-by-default \
-  --profile "$AWS_PROFILE" --region us-east-1
+  --profile mds-devsecops-lab \
+  --region us-east-1
+```
+
+```bash
 aws ec2 get-ebs-default-kms-key-id \
-  --profile "$AWS_PROFILE" --region us-east-1
+  --profile mds-devsecops-lab \
+  --region us-east-1
 ```
 
 The VPC query showed my existing default VPC used `172.31.0.0/16`, so I chose `10.20.0.0/16` for the lab. The AZ/type checks supported the selected `us-east-1a`, `t3.small`, and `t3.micro` combination. I verified the image was available, `x86_64`, and owned by Canonical (`099720109477`). Its ID can change as Ubuntu publishes images; [ami.tf](../terraform/ami.tf) performs the SSM parameter lookup for deployment.
@@ -326,6 +389,36 @@ A private subnet still needs a route for permitted outbound traffic. My private 
 
 The security groups permit outbound TCP 443. The instance bootstrap in `compute.tf` changes Ubuntu package sources to HTTPS so package installation fits that policy. If package updates fail, I inspect repository URLs and connectivity before broadening the rules.
 
+Before writing the smaller instance policy, I inspected AWS's managed `AmazonSSMManagedInstanceCore` policy. First I looked up its metadata, then read its active `v2` document and a compact summary of its actions:
+
+```bash
+aws iam get-policy \
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore \
+  --query 'Policy.{Name:PolicyName,Arn:Arn,DefaultVersion:DefaultVersionId,Updated:UpdateDate}' \
+  --output table \
+  --profile mds-devsecops-lab
+```
+
+```bash
+aws iam get-policy-version \
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore \
+  --version-id v2 \
+  --query 'PolicyVersion.Document' \
+  --output json \
+  --profile mds-devsecops-lab
+```
+
+```bash
+aws iam get-policy-version \
+  --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore \
+  --version-id v2 \
+  --query 'PolicyVersion.Document.Statement[].{Actions:Action,Resources:Resource}' \
+  --output json \
+  --profile mds-devsecops-lab
+```
+
+The compact query was subsequently confirmed as run in the journal. It exposed parameter-read, patching, inventory, compliance, and legacy messaging permissions beyond the Session Manager channels I needed. That review led to the narrower five-action agent policy below.
+
 Before deployment, I also reviewed the instance permissions. My human AWS account could provision resources; the servers did not need that privilege. Both agents needed these five SSM actions:
 
 ```json
@@ -351,6 +444,14 @@ I chose one managed NAT Gateway because it saved me operating another Linux serv
 
 **Checkpoint:** I can explain the purpose of each resource and its permission boundary before creating it.
 
+**Workstation troubleshooting:** my WSL terminal became unresponsive during the IAM-policy review. The journal records advice to try `Ctrl+C`, then the following PowerShell command if necessary. It does not confirm that I ran the shutdown command:
+
+```powershell
+wsl --shutdown
+```
+
+This was recovery guidance for the local workstation, not an AWS change.
+
 ### 1.7 I initialized and validated the Terraform configuration
 
 **Run in: local WSL, in `~/mds-aws-linux-hardening-1b`.**
@@ -368,7 +469,7 @@ My journal records the signed AWS provider `6.69.1` being installed and `Success
 
 I deployed the lab with Terraform from the original WSL project directory. The two private instances and transfer bucket then became the inputs for SSM, Ansible, and SFTP. [outputs.tf](../terraform/outputs.tf) exposes the instance and bucket identifiers.
 
-For clarity, later examples use `ADMIN_ID`, `TARGET_ID`, and `TRANSFER_BUCKET` as shorthand for those deployment values, with `AWS_PROFILE=mds-devsecops-lab` and Region `us-east-1`. These names are notation in this walkthrough, not evidence that I created an extra environment-loading script during the lab.
+The recorded target instance ID was `i-0cce45e09ec35a12a`, and I used the `mds-devsecops-lab` profile in `us-east-1`. The historical identifiers below belong to the lab that was later destroyed.
 
 **Checkpoint:** the AWS resources existed before I began the access configuration.
 
@@ -378,25 +479,9 @@ For clarity, later examples use `ADMIN_ID`, `TARGET_ID`, and `TRANSFER_BUCKET` a
 
 AWS resources existing does not mean I can manage them yet. Session Manager needs an agent on the instance, suitable IAM permissions and outbound connectivity, and a client plugin on my workstation.
 
-**Run in: local WSL.**
+Both nodes needed a working SSM Agent, instance permissions, and outbound connectivity. The workstation needed the Session Manager plugin. I used SSM to reach the private instances; the retained evidence does not preserve the plugin-installation or registration-query command.
 
-```bash
-command -v session-manager-plugin
-session-manager-plugin --version
-```
-
-The workstation needed the Session Manager plugin. I have not retained an exact installation transcript here, so I do not present a fresh installation recipe as a command I ran.
-
-Next I checked whether both instances had registered with SSM:
-
-```bash
-aws ssm describe-instance-information \
-  --filters "Key=InstanceIds,Values=$ADMIN_ID,$TARGET_ID" \
-  --query 'InstanceInformationList[].{Instance:InstanceId,Status:PingStatus,OS:PlatformName}' \
-  --output table
-```
-
-**Checkpoint:** both IDs appear with `Online`. A new instance can take a few minutes to register. If one is missing, check the instance profile, agent, NAT route, DNS, and HTTPS egress; I do not add public SSH to conceal an SSM setup problem.
+**Checkpoint:** I could open an SSM session to the target without public SSH access.
 
 ### 2.2 I opened a target session and captured its starting state
 
@@ -405,7 +490,8 @@ I kept separate terminals for WSL, the target, and later the admin controller. A
 **Run in: local WSL, in a new terminal using the target instance ID and lab profile.**
 
 ```bash
-aws ssm start-session --target "$TARGET_ID"
+aws ssm start-session --target i-0cce45e09ec35a12a \
+  --profile mds-devsecops-lab --region us-east-1
 ```
 
 The prompt now belongs to the target EC2. **Run the following inside that target session:**
@@ -417,29 +503,22 @@ cat /etc/os-release
 uname -r
 sudo ss -lntup
 systemctl list-units --type=service --state=running --no-pager
-command -v curl
-python3 --version
 ```
 
-My target was Ubuntu 24.04.5 on an AWS kernel. If this check shows `microsoft-standard-WSL2`, I am still on the workstation. I made that mistake during the lab and corrected it before interpreting missing packages or firewall output. The target needs `curl` and Python for the Ansible path; if either is missing, install them with `sudo apt-get update` followed by `sudo apt-get install -y curl python3` here.
+My target was Ubuntu 24.04.5 on an AWS kernel. If this check shows `microsoft-standard-WSL2`, I am still on the workstation. I made that mistake during the lab and corrected it before interpreting missing packages or firewall output.
 
 SSH listened on local port 22, alongside resolver and time-service sockets. That inventory tells me which programs listen; reachability also depends on AWS network controls. I recorded this baseline before changing the account or SSH policy.
 
-**Checkpoint:** I have positively identified the target and it has the basic Ansible dependencies. Leave this target session open.
+**Checkpoint:** I identified the target before interpreting its service and firewall output.
 
 ### 2.3 I prepared the dedicated data filesystem before configuring the chroot
 
 The 5-GiB disk created by Terraform is a block device. SFTP needs a mounted filesystem. I chose `/srv/sftp-data` as the server-side storage location and future chroot root. A **chroot** gives the SFTP account a restricted filesystem view; its `/` will represent this directory.
 
-**Run in: target SSM session.** Inspect first:
+The journal selected a separate data volume for the target:
 
-```bash
-lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS,SERIAL
-sudo blkid
-findmnt /
-```
 
-The data mount used `/srv/sftp-data` on the separate disk. Its root-owned chroot and writable upload directory are described below. I have removed the added `mkfs`, interactive device-selection, and fstab-editing recipe: the retained record does not establish those exact original commands. Formatting commands should not be invented to fill a gap in the lab history.
+The data mount used `/srv/sftp-data` on the separate disk. Its root-owned chroot and writable upload directory are described below. The exact disk-preparation commands were not retained.
 
 **Checkpoint:** the separate data mount was in place before the SFTP account used its upload directory.
 
@@ -447,59 +526,19 @@ The data mount used `/srv/sftp-data` on the separate disk. Its root-owned chroot
 
 Ansible runs tasks against a target from a **controller**. In this lab the controller is the private admin EC2, while WSL remains my Terraform workstation.
 
-**Run in: another local WSL terminal.**
-
-```bash
-aws ssm start-session --target "$ADMIN_ID"
-```
-
-**Now run in: admin SSM session.** I use the Ubuntu account consistently for the controller's files and tools:
-
-```bash
-hostname
-sudo -iu ubuntu
-whoami
-python3 --version
-command -v aws
-command -v ansible-playbook
-command -v session-manager-plugin
-```
-
-The admin node supplied Ansible and its AWS/SSM dependencies. It used the instance role rather than a copy of my workstation's human credentials. The repository records the required collections in [requirements.yml](../ansible/requirements.yml).
-
-The retained journal does not preserve the exact controller installation sequence. I removed the added virtual-environment and conditional installation blocks rather than describe them as my original commands.
-
-**Checkpoint:** the controller could manage the target through SSM before the configuration run.
+I used the private admin node as the Ansible controller, with its instance role providing AWS permissions. The retained journal does not preserve the exact controller preparation commands. The [collection requirements](../ansible/requirements.yml) document the repository's dependencies.
 
 ### 2.5 I created the SFTP key and staged the files the controller would need
 
 The transfer identity needs a dedicated key. The **private key** stays with the client; the **public key** is installed on the server. Possessing the public key alone does not let someone log in.
 
-**Run in: local WSL, outside either SSM session.**
-
-```bash
-cd ~/mds-aws-linux-hardening-1b
-install -d -m 0700 ~/.ssh
-umask 077
-ssh-keygen -t ed25519 -f ~/.ssh/mds-linux-hardening-1b-sftpdata \
-  -C project-1b-sftpdata
-```
-
-Choose a passphrase at the prompt. If the dedicated key already exists, use it rather than overwriting it. I staged the public key in the transfer bucket:
-
-```bash
-aws s3 cp ~/.ssh/mds-linux-hardening-1b-sftpdata.pub \
-  "s3://$TRANSFER_BUCKET/sftpdata/sftpdata.pub"
-printf 'Controller needs bucket: %s\nTarget ID: %s\n' "$TRANSFER_BUCKET" "$TARGET_ID"
-```
-
-The public key was staged at `sftpdata/sftpdata.pub` in the transfer bucket. The private key remained on WSL. I have removed the additional repository-upload and inventory-generation scripts from this account because they were added for reproduction, not preserved as original commands.
+My client used the dedicated key file `~/.ssh/mds-linux-hardening-1b-sftpdata`. The later connection command confirms that filename. The bucket listing showed the public key at `sftpdata/sftpdata.pub`; the private key stayed on the workstation. I have kept those recorded facts without substituting a new key-generation or upload command.
 
 ### 2.6 I configured Ansible to reach the private target
 
 The controller used `amazon.aws.aws_ssm` with the target instance ID, Region, and transfer bucket. The published [inventory example](../ansible/inventory/hosts.example.yml) and [collection requirements](../ansible/requirements.yml) document those settings. SSM shell access and Ansible module transfer have different dependencies: Ansible also needed S3 connectivity and the controller's scoped permissions.
 
-The retained record does not establish the exact original inventory-editing or connectivity-test command, so I do not substitute a newly written Python script for it.
+The exact original inventory-editing and connectivity-test commands were not retained.
 
 ### 2.7 I reviewed the account, filesystem, and SSH policy before applying it
 
@@ -538,39 +577,13 @@ Match all
 
 ### 2.8 I applied the access configuration with Ansible
 
-My recorded Ansible recap was `ok=17 changed=3 unreachable=0 failed=0`. I then checked the live account and SSH configuration directly. The repository's [target playbook](../ansible/playbooks/harden-target.yml) expresses the target configuration, but that recap does not establish that every task in the current file ran in the original session.
+I used Ansible for the access configuration. The repository's [target playbook](../ansible/playbooks/harden-target.yml) expresses the target configuration; the retained journal and original terminal evidence available for this review do not establish its exact original invocation or recap.
 
 In particular, I installed auditd, enabled UFW, and corrected network sysctls manually during the subsequent checks. I describe those actions in Layer 3 rather than claim that the earlier Ansible run had already done them.
 
-### 2.9 I checked the account, permissions, and effective SSH configuration
+### 2.9 I verified the access restrictions through SFTP
 
-**Run in: target SSM session.**
-
-```bash
-hostname
-findmnt --mountpoint /srv/sftp-data
-getent passwd sftpdata
-id sftpdata
-namei -l /srv/sftp-data/upload
-stat -c '%U:%G %a %n' \
-  /srv/sftp-data /srv/sftp-data/upload \
-  /home/sftpdata/.ssh /home/sftpdata/.ssh/authorized_keys
-sudo sshd -t
-sudo sshd -T -C user=sftpdata,host=localhost,addr=127.0.0.1 \
-  | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication|forcecommand|chrootdirectory|allowtcpforwarding|permittty)'
-```
-
-The account should have `nologin`, no sudo group, and the ownership/modes from Phase 2.7. My account had UID/GID 1002, but I use names because numeric IDs can differ on a rebuild. `sshd -t` checks syntax; no output with a successful exit is normal. `sshd -T -C` evaluates the actual `Match` policy for the SFTP user, including the chroot and forced SFTP command.
-
-**Problem I encountered:** the first effective-config check complained that `/run/sshd` did not exist. Only for that specific missing-directory error, I created the runtime directory and retried the checks:
-
-```bash
-sudo install -d -o root -g root -m 0755 /run/sshd
-sudo sshd -t
-sudo sshd -T -C user=sftpdata,host=localhost,addr=127.0.0.1
-```
-
-**Checkpoint:** the live account, permissions, and effective policy match the intended restriction. I save the functional upload/download and denied-action tests for Layer 4, after inspecting the OS controls.
+I checked the restrictions with the transfer and denied-action tests documented in Layer 4. The captured evidence includes a refused write at the chroot root and the response `This service allows sftp connections only.` when I tried to execute a shell command. Those results provide direct evidence of the access boundary.
 
 ## 3. Linux operating system hardening
 
@@ -584,17 +597,10 @@ Hardening does not remove the need to patch. First I wanted to know what was ins
 
 ```bash
 hostname
-dpkg-query -W -f='${Package} ${Status} ${Version}\n' \
-  openssh-server ufw apparmor unattended-upgrades auditd audispd-plugins
-sudo apt-get update
 apt list --upgradable 2>/dev/null
 ```
 
-Each required package should say `install ok installed`. A missing package must be installed before checking its service. I then reviewed available updates; when applying ordinary upgrades in this lab, I used:
-
-```bash
-sudo apt-get upgrade
-```
+I reviewed the available updates and attempted an upgrade. The captured output records the result, but does not preserve the exact upgrade invocation.
 
 Read the proposed package changes before accepting. My run left `cloud-init`, `tmux`, `ubuntu-pro-client`, and `ubuntu-pro-client-l10n` deferred due to phasing. I did not override Ubuntu's phased rollout just to make the list empty.
 
@@ -618,23 +624,37 @@ systemctl is-active apparmor
 sudo aa-status
 ```
 
+I also checked the package status:
+
+```bash
+dpkg-query -W -f='${Status} ${Version}\n' apparmor apparmor-utils
+```
+
+AppArmor was installed; `apparmor-utils` was not installed.
+
 My results were `enabled` and `active`, with 122 profiles loaded and 26 enforcing. `chronyd` and `rsyslogd` were among the enforced processes. The SSM Agent's profile was in complain mode. I read those actual states instead of assuming every process was confined because the service ran.
 
-Next I checked the automatic-update configuration and schedule:
+Next I checked the automatic-update service and its log:
 
 ```bash
 systemctl is-enabled unattended-upgrades
 systemctl is-active unattended-upgrades
-apt-config dump | grep -E 'APT::Periodic|Unattended-Upgrade::Allowed-Origins|Unattended-Upgrade::Origins-Pattern'
-systemctl list-timers 'apt-daily*' --all --no-pager
 sudo tail -n 30 /var/log/unattended-upgrades/unattended-upgrades.log
 ```
 
-My service was enabled and active. Its log showed allowed Ubuntu Noble/security origins and no packages eligible at that particular run. An active service alone is not proof the periodic configuration will schedule updates, so I check the configuration and timers as well.
+My service was enabled and active. Its log showed allowed Ubuntu Noble/security origins and no packages eligible at that particular run. I also reviewed the pasted allowed-origins configuration; the log is evidence of the run at that time.
 
-The log confirmed an unattended-upgrades run. I did not add a new periodic-update configuration here; the earlier walkthrough included an extra correction recipe that was not supported by my recorded actions.
+I checked for an explicit automatic-reboot setting:
 
-**Checkpoint:** I can describe the actual AppArmor enforcement state and see the unattended-update configuration, schedule, and available log evidence.
+```bash
+sudo apt-config dump | grep -i 'Unattended-Upgrade::Automatic-Reboot'
+```
+
+That query returned no matching setting. The separate reboot-required check reported that no reboot was currently required.
+
+The log confirmed an unattended-upgrades run. I retained the existing configuration rather than claim a new periodic-update configuration was written.
+
+**Checkpoint:** I recorded the actual AppArmor enforcement state, unattended-update configuration, and available log evidence.
 
 ### 3.3 I checked the host firewall, then verified management still worked
 
@@ -645,9 +665,17 @@ First I inspected the current state:
 ```bash
 sudo ufw status verbose
 sudo ufw status numbered
-grep '^IPV6=' /etc/default/ufw
 sudo ss -lntup
 ```
+
+Before enabling UFW, I inspected both IP families:
+
+```bash
+sudo iptables -S
+sudo ip6tables -S
+```
+
+Both outputs showed `ACCEPT` policies for INPUT, FORWARD, and OUTPUT.
 
 Before the lab changes, UFW was inactive. After enabling it manually, I verified `active`, default `deny (incoming)`, `allow (outgoing)`, low logging, and `IPV6=yes`. There is no inbound SSH exception because the management path is SSM.
 
@@ -664,7 +692,7 @@ sudo ufw status verbose
 
 **Problem I encountered:** I accidentally pasted `ufw status numbered` together with `IPV6=yes`, which produced a syntax error. I reran the command on its own. Earlier, `ufw: command not found` came from WSL, not the target. I checked the host instead of installing packages on the wrong machine.
 
-**Checkpoint:** UFW reports the intended policy. From a separate WSL terminal, use the lab profile and open a fresh `aws ssm start-session --target "$TARGET_ID"`; run `hostname` there to confirm that new management access still works. Keep the original session open until that succeeds.
+**Checkpoint:** UFW reported the intended policy. I opened a fresh target SSM session and ran `hostname`; it returned `ip-10-20-20-177`, confirming management access still worked.
 
 ### 3.4 I verified auditd, then loaded rules before testing events
 
@@ -679,8 +707,7 @@ systemctl is-active auditd
 **If it is missing**, complete installation before enabling it:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y auditd audispd-plugins
+sudo apt install auditd audispd-plugins
 sudo systemctl enable --now auditd
 systemctl is-enabled auditd
 systemctl is-active auditd
@@ -724,9 +751,6 @@ sudo auditctl -s
 
 Next I inspected the log-retention settings, so the audit output would not grow without bounds:
 
-```bash
-sudo grep -E '^(flush|freq|max_log_file|num_logs|max_log_file_action|space_left|space_left_action|admin_space_left|admin_space_left_action|disk_full_action|disk_error_action)[[:space:]]*=' /etc/audit/auditd.conf
-```
 
 My policy was:
 
@@ -751,7 +775,6 @@ With the daemon and rules ready, I made a harmless test change:
 ```bash
 sudo touch /etc/ufw/.audit-lab-test
 sudo rm /etc/ufw/.audit-lab-test
-sudo ausearch -k firewall -ts recent -i
 ```
 
 I found creation and deletion records for the exact test path, with `touch` and `rm` in the process data and `key=firewall`. The earlier `CONFIG_CHANGE` event only showed that I added the rule; the later file events proved it captured activity.
@@ -782,29 +805,23 @@ sudo sysctl kernel.randomize_va_space kernel.dmesg_restrict kernel.kptr_restrict
   net.ipv4.conf.default.accept_source_route net.ipv4.conf.ens5.accept_source_route
 ```
 
-My initial inspection found `send_redirects` and `accept_source_route` still enabled in the default/interface settings. I checked the interface name with `ip -br link`; my target used `ens5`, which is also the interface used in the playbook.
+My initial inspection found `send_redirects` and `accept_source_route` still enabled in the default/interface settings. The captured target output identifies the interface as `ens5`.
 
-The manual network-only correction I used was:
+The captured command that disabled outgoing redirects was:
 
 ```bash
 sudo tee /etc/sysctl.d/99-linux-hardening-network.conf >/dev/null <<'EOF'
 net.ipv4.conf.all.send_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
 net.ipv4.conf.ens5.send_redirects = 0
-net.ipv4.conf.all.accept_source_route = 0
-net.ipv4.conf.default.accept_source_route = 0
-net.ipv4.conf.ens5.accept_source_route = 0
 EOF
 sudo sysctl -p /etc/sysctl.d/99-linux-hardening-network.conf
 ```
 
 The quoted heredoc writes the lines literally; `sysctl -p` applies that file. This manual block replaces the whole named file, while the playbook writes additional host settings to the same path. On a playbook-managed rebuild, inspect its complete file and apply that instead of replacing it with this shorter historical block.
 
-Then I checked the persistent file and live kernel values:
+I subsequently corrected source-route acceptance too. The later output confirms zero for `all`, `default`, and `ens5`; the exact second write command was not retained. I checked the live kernel values:
 
-```bash
-sudo cat /etc/sysctl.d/99-linux-hardening-network.conf
-```
 
 ```bash
 sudo sysctl -p /etc/sysctl.d/99-linux-hardening-network.conf
@@ -878,43 +895,20 @@ The client key proves my transfer user's identity to the server. The server's **
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 ```
 
-Keep that public fingerprint available for comparison. Then start the tunnel from WSL.
-
-**Run in: local WSL terminal A.**
-
-```bash
-aws ssm start-session --target "$TARGET_ID" \
-  --document-name AWS-StartPortForwardingSession \
-  --parameters '{"portNumber":["22"],"localPortNumber":["2222"]}'
-```
-
-Leave terminal A open. It forwards local port 2222 to the target's local SSH service on 22. It creates no inbound security-group rule. SSM's tunnel does not provide a log of the encrypted file contents, so I rely on the test results and appropriate host evidence for the transfer behavior.
-
-**Run in: another local WSL terminal B.**
-
-```bash
-sftp -P 2222 -i ~/.ssh/mds-linux-hardening-1b-sftpdata \
-  -o IdentitiesOnly=yes -o HostKeyAlgorithms=ssh-ed25519 sftpdata@127.0.0.1
-```
-
-On the first connection, compare the displayed ED25519 SHA-256 fingerprint with the one obtained through SSM before accepting it. If it differs, stop and investigate. A reused local tunnel port may have an old known-host entry; verify the new target before removing any old entry. I do not bypass host-key checking.
-
-**Checkpoint:** the verified server accepts the dedicated key and I see an `sftp>` prompt. That prompt is the SFTP client, not a Linux shell.
+I reached the target's SFTP service through local port `2222` and compared the saved host-key fingerprint with the target fingerprint. The retained connection evidence confirms the tunnel endpoint and dedicated key, but not the complete original tunnel-start or SFTP-login command. The recorded transfer and shell-denial commands follow below.
 
 ### 4.2 I uploaded and downloaded the text file, then compared its hashes
 
-**Run at: the `sftp>` prompt in WSL terminal B. Enter the text after the prompt, not the prompt itself.**
+**Recorded at: the `sftp>` prompt on WSL. Enter the text after the prompt, not the prompt itself.**
 
 ```text
-sftp> !printf 'SFTP hardening lab transfer test\n' > /tmp/mds-sftp-test.txt
-sftp> put /tmp/mds-sftp-test.txt /upload/mds-sftp-test.txt
 sftp> get /upload/mds-sftp-test.txt /tmp/mds-sftp-downloaded.txt
 sftp> !sha256sum /tmp/mds-sftp-test.txt /tmp/mds-sftp-downloaded.txt
 d138cba463fc98be7e2c7692f969a71d0a4c17c095462a4e76ca03582535090e  /tmp/mds-sftp-test.txt
 d138cba463fc98be7e2c7692f969a71d0a4c17c095462a4e76ca03582535090e  /tmp/mds-sftp-downloaded.txt
 ```
 
-The `!` prefix runs a command on my local WSL computer. `printf` creates the test file locally. `put` sends it into the server's `/upload`; `get` downloads it to a different local filename; `sha256sum` compares the two local copies. Both digests in my run matched.
+The test file was uploaded into `/upload`. The captured `get` command downloaded it to a different local filename, and `!sha256sum` compared the two copies on WSL. Both digests matched. The original creation and upload command lines were not retained in the visible evidence.
 
 The target-side destination was `/srv/sftp-data/upload/mds-sftp-test.txt`. Inside the chroot, that same location appeared as `/upload/mds-sftp-test.txt`. The content was a test sentence, not a customer-register CSV. The successful transfer proved this file could make the round trip intact.
 
@@ -922,22 +916,9 @@ The target-side destination was `/srv/sftp-data/upload/mds-sftp-test.txt`. Insid
 
 A successful upload proves usability. It does not prove the user is restricted, so I also tested the boundaries.
 
-**Still at the SFTP prompt:**
+The captured SFTP output refused opening `/mds-write-denied-test.txt` with `Permission denied`. That demonstrates the transfer account could not write at the chroot root. The record does not preserve the full navigation-test sequence, so I do not claim it as an executed command sequence.
 
-```text
-sftp> pwd
-sftp> cd ..
-sftp> pwd
-sftp> cd ..
-sftp> pwd
-sftp> cd /etc
-sftp> put /tmp/mds-sftp-test.txt /mds-write-denied-test.txt
-sftp> bye
-```
-
-From `/upload`, the first `cd ..` reaches the chroot's `/`; the next cannot escape that root. The host's real `/etc` is outside this view, and writing to the chroot root should return `Permission denied`. I kept the upload directory writable and the chroot root protected.
-
-**Back in the WSL shell in terminal B, while terminal A still holds the tunnel:**
+**Back in the WSL shell, with the SSM tunnel still open:**
 
 ```bash
 ssh -T -p 2222 -i ~/.ssh/mds-linux-hardening-1b-sftpdata \
@@ -952,7 +933,7 @@ I also compared the saved host-key fingerprint with the one I obtained through S
 ssh-keygen -F '[127.0.0.1]:2222' | ssh-keygen -lf - -E sha256
 ```
 
-**Checkpoint:** transfer succeeds within `/upload`, escape/root-write attempts fail, shell execution is denied, and the server identity matches. After testing, stop the tunnel with `Ctrl+C` in terminal A.
+**Checkpoint:** transfer succeeded within `/upload`, a chroot-root write failed, shell execution was denied, and the server identity matched.
 
 ### 4.4 I recorded what the evidence established
 
@@ -966,29 +947,21 @@ ssh-keygen -F '[127.0.0.1]:2222' | ssh-keygen -lf - -E sha256
 | Host monitoring | auditd active, nine watches loaded, harmless test events captured, zero lost events at status check |
 | Maintenance and host settings | AppArmor/service state, update results, persistent sysctls, logs, and failed units inspected |
 
-I kept the [verification record](verification.md) and [hardening evidence](../evidence/hardening-results.md) alongside the code. My journal retained the mistakes too: the wrong WSL PATH, missing CLI profile, host confusion, Ansible's extra S3 dependency, an auditd unit checked before installation, and pasted commands accidentally joined together. Each taught me to check a prerequisite or the actual source of an output before changing policy.
+I kept the [verification record](verification.md) and [hardening evidence](../evidence/hardening-results.md) alongside the code. My journal retained the mistakes too: the wrong WSL PATH, missing CLI profile, host confusion, an auditd unit checked before installation, and pasted commands accidentally joined together. Each taught me to check a prerequisite or the actual source of an output before changing policy.
 
 ### 4.5 I removed the temporary files and destroyed the AWS infrastructure
 
 Finishing the demonstration included removing the running resources. I closed my SFTP/tunnel sessions and exited the EC2 shells. **Run the remaining commands in local WSL**, using the same repository and Terraform state that created this lab.
 
+My first destroy attempt encountered `BucketNotEmpty`. The bucket still contained `sftpdata/sftpdata.pub`. I removed the remaining contents and retried Terraform. The exact object-removal command was not retained.
+
 ```bash
 cd ~/mds-aws-linux-hardening-1b
-aws sts get-caller-identity
-terraform state list
-printf 'Lab bucket selected for cleanup: %s\n' "$TRANSFER_BUCKET"
-aws s3 ls "s3://$TRANSFER_BUCKET/" --recursive
-```
-
-I check the selected account and bucket before deleting anything. In my first destroy attempt, the S3 bucket still contained the public-key object, so AWS returned `BucketNotEmpty`. For a repeat run, I clear the verified lab bucket before destroying it:
-
-```bash
-aws s3 rm "s3://$TRANSFER_BUCKET/" --recursive
 terraform destroy
 terraform state list
 ```
 
-I review Terraform's destroy proposal, then enter `yes` only when it names the intended lab resources. If a partial destroy already deleted the bucket, an S3 `NoSuchBucket` response means that cleanup step is no longer needed; continue with Terraform's remaining resources. A connection error is different and needs investigation.
+I ran the destroy from the original Terraform working directory and reviewed its proposed deletions.
 
 After removing the bucket contents, my final run reported `Destroy complete! Resources: 1 destroyed.` That was the last resource from the earlier partial teardown. `terraform state list` was empty afterward. I retained the local state and evidence until I finished checking the result.
 
@@ -996,20 +969,27 @@ After removing the bucket contents, my final run reported `Destroy complete! Res
 
 An empty Terraform state shows what that state file still manages; I also checked AWS. These queries use the deployment IDs and project tag, so there is no need to look up old outputs after destroy:
 
+The tagging query returned old resource ARNs, which prompted direct service checks:
+
 ```bash
-aws ec2 describe-instances --instance-ids "$ADMIN_ID" "$TARGET_ID" \
-  --query 'Reservations[].Instances[].{ID:InstanceId,State:State.Name}' --output table
-aws ec2 describe-nat-gateways \
-  --filter Name=tag:Project,Values=mds-linux-hardening-1b \
-  --query 'NatGateways[].{ID:NatGatewayId,State:State}' --output table
-aws ec2 describe-volumes \
-  --filters Name=tag:Project,Values=mds-linux-hardening-1b \
-  --query 'Volumes[].{ID:VolumeId,State:State}' --output table
-aws ec2 describe-vpc-endpoints \
-  --filters Name=tag:Project,Values=mds-linux-hardening-1b \
-  --query 'VpcEndpoints[].{ID:VpcEndpointId,State:State}' --output table
+aws resourcegroupstaggingapi get-resources \
+  --tag-filters Key=Project,Values=mds-linux-hardening-1b \
+  --query 'ResourceTagMappingList[].ResourceARN' \
+  --output table \
+  --profile mds-devsecops-lab \
+  --region us-east-1
+```
+
+The retained screenshot shows instance and NAT states, an endpoint-ID not-found response, and a volume-ID not-found response. A subsequent filtered volume check returned no resources. I retain those results without replacing the original calls with new tag-filtered query recipes.
+
+The S3 verification command is preserved in the chat:
+
+```bash
 aws s3api list-buckets \
-  --query "Buckets[?Name=='$TRANSFER_BUCKET'].Name" --output text
+  --query "Buckets[?Name=='mds-linux-hardening-1b-273517699789-us-east-1'].Name" \
+  --output text \
+  --profile mds-devsecops-lab \
+  --region us-east-1
 ```
 
 My checks showed both instances `terminated`, the NAT Gateway `deleted`, the queried endpoint absent, and no volumes in the filtered volume result. Deleted instances can remain visible briefly; later their IDs can return not found. The tagging API still listed old ARNs, which did not override the direct service states. My S3 listing could not reach its endpoint at that time, so I recorded the Terraform deletion separately from that unavailable check.
