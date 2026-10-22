@@ -279,7 +279,9 @@ aws logout
 
 The ARN identified the root session, and `aws logout` removed its cached CLI credentials.
 
-I signed in from WSL with the lab profile, then checked the active identity and default Region:
+**Problem I encountered:** I had created console access for the lab IAM user, but its named AWS CLI profile did not exist yet. My first profile-specific CLI call returned “The config profile could not be found.” I fixed that by signing in from WSL with `aws login --profile mds-devsecops-lab`:
+
+I then checked the active identity and default Region:
 
 ```bash
 aws login --profile mds-devsecops-lab
@@ -287,11 +289,9 @@ aws sts get-caller-identity --profile mds-devsecops-lab
 aws configure get region --profile mds-devsecops-lab
 ```
 
-I selected the lab IAM user in the browser. The identity check confirmed that principal, and the Region check returned `us-east-1`.
+I selected the lab IAM user in the browser. The identity check confirmed that I was using that principal, and the Region check returned `us-east-1`. When the short-lived CLI session expires, I need to sign in again with `aws login`; that does not change the IAM user's console password.
 
-**Problem I encountered:** console sign-in worked before the named CLI profile existed. The CLI therefore returned “The config profile could not be found.” Creating/authenticating that profile with `aws login --profile mds-devsecops-lab` resolved the missing-profile step. An expired CLI session later needs a new login; it is different from an expired IAM console password.
-
-**Password problem I encountered:** renewing the CLI session could not reset the IAM console password. I used the following block with my authorized `root-recovery` profile, which needed a valid administrator session. It prompts privately for a replacement password, writes the request to a restricted temporary file, removes that file on exit, and updates the console login profile. It does not retrieve the old password or create access keys.
+Later, I needed to reset the IAM user's AWS console password. Signing in to the CLI again would not change that password, so I used my authorized `root-recovery` profile, which required a valid administrator session. The script below hides the new password, checks the confirmation, passes the request in a restricted temporary file, and removes the file on exit. It sets a replacement password; it cannot retrieve the old one or create access keys.
 
 ```bash
 (
