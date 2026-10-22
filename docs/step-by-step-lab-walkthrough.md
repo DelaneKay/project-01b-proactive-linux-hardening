@@ -166,9 +166,7 @@ aws iam list-attached-user-policies --user-name mds-devsecops-lab
 
 `SignInLocalDevelopmentAccess` enabled browser-based CLI sign-in. `AdministratorAccess` supplied the human lab user's broad resource permissions; neither server received that administrator policy.
 
-Next, I created the console login profile with a temporary password and required a password change at first sign-in. The shell stops if a step fails, restricts the temporary file, and removes it on exit; Python hides the password prompts, checks that the entries match, and writes the request for AWS.
-
-I used this block to create the login profile:
+After attaching the user's policies, I created a console login profile so I could sign in through a browser and enroll MFA. The script prompts for a temporary password without displaying it, checks the confirmation, and places the AWS request in a restricted temporary file that is removed when the script exits. AWS required a password change at first sign-in:
 
 ```bash
 set -e
