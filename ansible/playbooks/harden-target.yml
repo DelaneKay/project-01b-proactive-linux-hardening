@@ -1,0 +1,239 @@
+---
+- name: Apply proactive hardening to the private SFTP target
+  hosts: sftp_target
+  become: true
+  gather_facts: true
+
+  vars:
+    required_packages:
+      - openssh-server
+      - ufw
+      - apparmor
+      - unattended-upgrades
+      - auditd
+      - audispd-plugins
+    hardening_sysctl:
+      kernel.randomize_va_space: "2"
+      kernel.dmesg_restrict: "1"
+      kernel.kptr_restrict: "1"
+      fs.protected_hardlinks: "1"
+      fs.protected_symlinks: "1"
+      net.ipv4.ip_forward: "0"
+      net.ipv4.conf.all.accept_redirects: "0"
+      net.ipv4.conf.default.accept_redirects: "0"
+      net.ipv4.conf.all.send_redirects: "0"
+      net.ipv4.conf.default.send_redirects: "0"
+      net.ipv4.conf.ens5.send_redirects: "0"
+      net.ipv4.conf.all.accept_source_route: "0"
+      net.ipv4.conf.default.accept_source_route: "0"
+      net.ipv4.conf.ens5.accept_source_route: "0"
+      net.ipv4.conf.all.rp_filter: "2"
+      net.ipv4.conf.ens5.rp_filter: "2"
+      net.ipv4.tcp_syncookies: "1"
+      net.ipv6.conf.all.accept_redirects: "0"
+      net.ipv6.conf.all.accept_source_route: "0"
+    audit_watch_rules:
+      - "-w /etc/passwd -p wa -k identity"
+      - "-w /etc/group -p wa -k identity"
+      - "-w /etc/shadow -p wa -k identity"
+      - "-w /etc/gshadow -p wa -k identity"
+      - "-w /etc/sudoers -p wa -k privileged-access"
+      - "-w /etc/sudoers.d -p wa -k privileged-access"
+      - "-w /etc/ssh/sshd_config -p wa -k ssh-config"
+      - "-w /etc/ssh/sshd_config.d -p wa -k ssh-config"
+      - "-w /etc/ufw -p wa -k firewall"
+
+  tasks:
+    - name: Confirm the dedicated data volume is mounted at the SFTP chroot
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - --noheadings
+          - --mountpoint
+          - "{{ sftp_chroot }}"
+      register: sftp_mount_check
+      changed_when: false
+
+    - name: Require a separate filesystem mount before configuring SFTP
+      ansible.builtin.assert:
+        that:
+          - sftp_mount_check.rc == 0
+        fail_msg: >-
+          {{ sftp_chroot }} is not a mount point. Attach and mount the dedicated
+          encrypted data volume there before applying the SFTP configuration.
+
+    - name: Install host security and service packages
+      ansible.builtin.apt:
+        name: "{{ required_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Ensure dedicated SFTP group exists
+      ansible.builtin.group:
+        name: "{{ sftp_group }}"
+        state: present
+
+    - name: Ensure dedicated SFTP account is non-interactive
+      ansible.builtin.user:
+        name: "{{ sftp_username }}"
+        group: "{{ sftp_group }}"
+        shell: /usr/sbin/nologin
+        create_home: true
+        password_lock: true
+        state: present
+
+    - name: Ensure SFTP chroot root is owned by root
+      ansible.builtin.file:
+        path: "{{ sftp_chroot }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Ensure SFTP upload directory is writable only by the transfer account
+      ansible.builtin.file:
+        path: "{{ sftp_chroot }}/upload"
+        state: directory
+        owner: "{{ sftp_username }}"
+        group: "{{ sftp_group }}"
+        mode: "0750"
+
+    - name: Install the dedicated public key for SFTP authentication
+      ansible.posix.authorized_key:
+        user: "{{ sftp_username }}"
+        key: "{{ lookup('ansible.builtin.file', sftp_public_key_file) }}"
+        state: present
+        manage_dir: true
+
+    - name: Configure SSH restrictions and SFTP-only chroot
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/00-project-hardening.conf
+        owner: root
+        group: root
+        mode: "0644"
+        validate: "/usr/sbin/sshd -t -f %s"
+        content: |
+          PermitRootLogin no
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+          X11Forwarding no
+          Match Group {{ sftp_group }}
+              ChrootDirectory {{ sftp_chroot }}
+              ForceCommand internal-sftp -d /upload
+              AllowTcpForwarding no
+              PermitTunnel no
+              PermitTTY no
+              X11Forwarding no
+          Match all
+      notify: Reload SSH
+
+    - name: Enable and start OpenSSH server
+      ansible.builtin.service:
+        name: ssh
+        state: started
+        enabled: true
+
+    - name: Ensure UFW IPv6 support remains enabled
+      ansible.builtin.lineinfile:
+        path: /etc/default/ufw
+        regexp: '^IPV6='
+        line: 'IPV6=yes'
+      notify: Reload UFW
+
+    - name: Set UFW inbound default to deny
+      community.general.ufw:
+        direction: incoming
+        policy: deny
+
+    - name: Set UFW outbound default to allow
+      community.general.ufw:
+        direction: outgoing
+        policy: allow
+
+    - name: Enable UFW with low logging
+      community.general.ufw:
+        state: enabled
+        logging: low
+
+    - name: Enable and start AppArmor
+      ansible.builtin.service:
+        name: apparmor
+        state: started
+        enabled: true
+
+    - name: Enable unattended upgrades at boot
+      ansible.builtin.service:
+        name: unattended-upgrades
+        state: started
+        enabled: true
+
+    - name: Configure audit log rotation and disk safeguards
+      ansible.builtin.lineinfile:
+        path: /etc/audit/auditd.conf
+        regexp: "^{{ item.key }}\\s*="
+        line: "{{ item.key }} = {{ item.value }}"
+      loop:
+        - { key: flush, value: INCREMENTAL_ASYNC }
+        - { key: freq, value: "50" }
+        - { key: max_log_file, value: "8" }
+        - { key: num_logs, value: "5" }
+        - { key: max_log_file_action, value: ROTATE }
+        - { key: space_left, value: "75" }
+        - { key: space_left_action, value: SYSLOG }
+        - { key: admin_space_left, value: "50" }
+        - { key: admin_space_left_action, value: SUSPEND }
+        - { key: disk_full_action, value: SUSPEND }
+        - { key: disk_error_action, value: SUSPEND }
+      notify: Restart auditd
+
+    - name: Persist audit watch rules
+      ansible.builtin.copy:
+        dest: /etc/audit/rules.d/99-project-hardening.rules
+        owner: root
+        group: root
+        mode: "0640"
+        content: "{{ audit_watch_rules | join('\n') }}\n"
+      notify: Load audit rules
+
+    - name: Persist kernel and network hardening values
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-linux-hardening-network.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {% for key, value in hardening_sysctl.items() %}
+          {{ key }} = {{ value }}
+          {% endfor %}
+      notify: Apply sysctl settings
+
+    - name: Enable and start auditd
+      ansible.builtin.service:
+        name: auditd
+        state: started
+        enabled: true
+
+  handlers:
+    - name: Validate and reload SSH
+      listen: Reload SSH
+      ansible.builtin.service:
+        name: ssh
+        state: reloaded
+
+    - name: Reload UFW
+      ansible.builtin.command: ufw reload
+      changed_when: false
+
+    - name: Restart auditd
+      ansible.builtin.command: service auditd restart
+      changed_when: false
+
+    - name: Load audit rules
+      ansible.builtin.command: augenrules --load
+      changed_when: true
+
+    - name: Apply sysctl settings
+      ansible.builtin.command: sysctl --system
+      changed_when: true

@@ -1,0 +1,20 @@
+---
+all:
+  children:
+    sftp_target:
+      hosts:
+        target:
+          # Replace with the target_instance_id Terraform output.
+          ansible_host: "i-REPLACE_WITH_TARGET_INSTANCE_ID"
+          ansible_connection: amazon.aws.aws_ssm
+          ansible_aws_ssm_region: us-east-1
+          # Replace with the ansible_transfer_bucket Terraform output.
+          ansible_aws_ssm_bucket_name: "REPLACE_WITH_TRANSFER_BUCKET"
+          ansible_user: ubuntu
+      vars:
+        # Stage the SFTP public key on the Ansible controller; never put a
+        # private key or a real key value in this inventory file.
+        sftp_public_key_file: /tmp/sftpdata.pub
+        sftp_username: sftpdata
+        sftp_group: sftp-only
+        sftp_chroot: /srv/sftp-data

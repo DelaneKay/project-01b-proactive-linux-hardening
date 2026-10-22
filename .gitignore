@@ -1,0 +1,24 @@
+# Terraform local data and generated plans
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+
+# Local values may contain environment-specific settings
+*.tfvars
+!*.tfvars.example
+
+# SSH keys, credentials, and local Ansible artifacts
+*.pem
+*.key
+id_*
+*.retry
+.vault-password
+vault-password-file
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
+.vscode/
