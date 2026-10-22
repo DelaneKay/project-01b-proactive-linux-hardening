@@ -277,7 +277,7 @@ aws sts get-caller-identity --query 'Arn' --output text
 aws logout
 ```
 
-The ARN identified the root session, and `aws logout` removed its cached CLI credentials. `aws configure get region` only reads the selected Region; `aws configure sso` is a separate temporary-credential method. [AWS documents this browser-based temporary-credential flow](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html).
+The ARN identified the root session, and `aws logout` removed its cached CLI credentials.
 
 I signed in from WSL with the lab profile, then checked the active identity and default Region:
 
