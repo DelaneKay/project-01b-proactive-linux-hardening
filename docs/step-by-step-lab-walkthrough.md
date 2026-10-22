@@ -1,6 +1,6 @@
 # My Project 1B proactive Linux hardening journey
 
-- **Core technologies:** AWS, Terraform, IAM, Systems Manager Session Manager, Ubuntu, Ansible, OpenSSH/SFTP, AppArmor, UFW, and auditd.
+- **Core technologies:** AWS, AWS CLI, Terraform, IAM, Systems Manager Session Manager, Ubuntu, Ansible, OpenSSH/SFTP, AppArmor, UFW, and auditd.
 - **Problem addressed:** I needed to build a private file-transfer server, restrict the transfer account to its intended job, and harden the Linux host without opening public SSH access.
 - **Outcome:** I provisioned the AWS lab with Terraform, managed the private target through Session Manager, and used Ansible and Linux controls to configure it. The SFTP account could transfer a test text file but could not write at the chroot root or start a shell. Matching SHA-256 hashes confirmed the file survived upload and download intact. After the demonstration, I used `terraform destroy` to remove the lab resources.
 
