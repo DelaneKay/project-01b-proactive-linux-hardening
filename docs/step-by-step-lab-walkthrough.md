@@ -279,9 +279,7 @@ aws logout
 
 The ARN identified the root session, and `aws logout` removed its cached CLI credentials.
 
-**Problem I encountered:** I had created console access for the lab IAM user, but its named AWS CLI profile did not exist yet. My first profile-specific CLI call returned “The config profile could not be found.” I fixed that by signing in from WSL with `aws login --profile mds-devsecops-lab`:
-
-I then checked the active identity and default Region:
+**Problem I encountered:** I could sign in to the IAM user's console before the named AWS CLI profile existed, but my first profile-specific CLI call returned “The config profile could not be found.” I created and authenticated the profile, then checked the active identity and default Region:
 
 ```bash
 aws login --profile mds-devsecops-lab
@@ -289,9 +287,9 @@ aws sts get-caller-identity --profile mds-devsecops-lab
 aws configure get region --profile mds-devsecops-lab
 ```
 
-I selected the lab IAM user in the browser. The identity check confirmed that I was using that principal, and the Region check returned `us-east-1`. When the short-lived CLI session expires, I need to sign in again with `aws login`; that does not change the IAM user's console password.
+I selected the lab IAM user in the browser. `get-caller-identity` confirmed the active principal, and the Region check returned `us-east-1`. That completed the named CLI profile setup.
 
-Later, I needed to reset the IAM user's AWS console password. Signing in to the CLI again would not change that password, so I used my authorized `root-recovery` profile, which required a valid administrator session. The script below hides the new password, checks the confirmation, passes the request in a restricted temporary file, and removes the file on exit. It sets a replacement password; it cannot retrieve the old one or create access keys.
+Later, the IAM user's AWS console password needed resetting. Signing in to the CLI again would not change that password, so I used my authorized `root-recovery` profile, which required a valid administrator session. The script below hides the new password, checks the confirmation, passes the request in a restricted temporary file, and removes the file on exit. It sets a replacement password; it cannot retrieve the old one or create access keys.
 
 ```bash
 (
