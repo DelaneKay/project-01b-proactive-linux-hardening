@@ -390,7 +390,7 @@ I checked the account’s EBS encryption defaults before setting up storage. Def
 
 Only now did I have enough information to settle the deployment. I needed three machines with clear responsibilities: my existing WSL workstation would run Terraform and AWS CLI; a private admin EC2 would run Ansible; a private target EC2 would host SFTP.
 
-I chose Session Manager for administration because it uses an IAM-authorized session and the instance agent's outbound connection. That let me keep both EC2 nodes without public IPs or inbound SSH rules. I considered a public bastion, but it would add another server to patch and monitor. OpenSSH would still run on the target for SFTP, reached through a later SSM tunnel.
+That three-node design also shaped how I would administer the two EC2 instances. Since both would sit in private subnets without public IPs, I needed a management path that did not require opening inbound SSH. I used Systems Manager Session Manager: IAM controls who can start a session, and the SSM agent on each instance connects out to the service. This allowed me to manage the admin and target nodes without inbound security-group rules. A public bastion could have provided access, but it would add another server to patch and monitor. The target still needed OpenSSH for SFTP, so I planned to reach that service through an SSM port-forwarding tunnel.
 
 ```text
 Operator workstation (WSL: Terraform + AWS CLI)
