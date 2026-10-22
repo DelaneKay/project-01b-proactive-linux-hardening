@@ -6,6 +6,15 @@
 
 This is my account of Project 1B, from the choices I made before deployment to the tests I ran and the teardown afterward. I used the saved journal and captured outputs to put the steps in order. I explain what I was trying to prove as I go, because a list of commands alone does not show why the controls mattered.
 
+I guided the lab through four connected steps. Cloud hardening is layered: AWS networking cannot replace Linux permissions, and host controls cannot make a public management path safe. I built each layer for a reason, checked how it behaved, and kept the journal so I could learn from both successful checks and the problems I had to troubleshoot.
+
+| Step | Layer | What I worked through |
+| --- | --- | --- |
+| 1 | AWS infrastructure | Private network, IAM roles, encrypted storage, SSM-ready instances, and Terraform provisioning |
+| 2 | Access management and SSH hardening | Separate administration from file transfer; restrict the SFTP identity, SSH behavior, and chroot filesystem boundary |
+| 3 | Linux operating system hardening | Configure the host firewall, AppArmor, unattended updates, auditd, and kernel/network settings |
+| 4 | Validation and cleanup | Test allowed and denied behavior, review evidence and lessons from troubleshooting, then destroy the lab |
+
 Project 1A began with an existing server that already had unsafe settings; I investigated and remediated it. For Project 1B, I started from the other direction: I designed a small private environment, configured a Linux workload with least privilege, then tested the intended access and the boundaries around it. The workload used synthetic customer-register data in a controlled lab. This was not a real incident or a production service.
 
 > **Reconstruction note:** The Terraform configuration in this repository is the source used for the deployment. I did not retain the temporary Ansible playbook from the original run. I later reconstructed `ansible/playbooks/harden-target.yml` from the verified target configuration; it is not a byte-for-byte copy of the original. I syntax-checked the reconstructed playbook. The original successful Ansible run was recorded as `ok=17`, `changed=3`, `unreachable=0`, `failed=0`, but that recap cannot prove the reconstructed file produced it.
@@ -18,7 +27,7 @@ I framed the workload as a private SFTP drop for synthetic customer-register dat
 
 I used synthetic data only. This was a learning exercise, not a production deployment or a real customer-data service.
 
-## 1. I designed a private AWS lab
+## 1. AWS infrastructure layer — I designed and provisioned a private lab
 
 I used my WSL workstation for Terraform and the AWS CLI. A separate EC2 admin node ran Ansible and managed the target through the AWS Systems Manager (SSM) connection plugin. I kept both EC2 instances in private subnets, with no public IPs and no inbound security-group rules. The target's local `sshd` still listened on port 22, but I reached it through SSM rather than opening SSH to the internet.
 
@@ -66,7 +75,7 @@ Ansible added a third path. The controller on my admin node used SSM to run task
 
 I treated the security group and the host firewall as separate enforcement layers. The target needed a local listener on port 22 for SFTP, but that alone did not make it reachable from an untrusted network. I kept the EC2 security group free of ingress rules and set UFW to deny incoming traffic. For this lab, I deliberately used SSM port forwarding as the authorized path.
 
-## 2. I prepared and provisioned the AWS lab
+This first layer gave me network boundaries and managed identities to build on. The private subnets kept the EC2 nodes off public addresses; security groups controlled which network paths AWS allowed; encrypted EBS protected stored blocks; and the instance roles gave each server the AWS permissions needed for its job. None of those settings, by themselves, restricted what an authenticated Linux user could do after connecting. That was why I planned a separate access layer and host-level controls.
 
 ### I confirmed my AWS identity and workstation setup
 
@@ -188,6 +197,14 @@ cd ..
 
 Terraform outputs provide the admin and target instance IDs and transfer bucket name. Keep those values in the shell or an untracked local file; do not paste live identifiers into public documentation. Wait until both nodes are registered as SSM managed instances before proceeding. If a node does not appear, check its instance profile, SSM Agent status, route to the required SSM endpoints, and NAT or VPC endpoint path instead of opening inbound SSH as a shortcut.
 
+## 2. Access management and SSH hardening — I controlled who could connect and what they could do
+
+I chose Systems Manager Session Manager instead of opening SSH to administer either EC2 node. With public SSH, I would need an internet-reachable path and would expose a login service that I then had to protect with source restrictions, key management, patching, and monitoring. Session Manager let me start an IAM-authorized session over the SSM Agent's outbound connection, with no public IP or inbound port 22 rule. It also avoided a public bastion, which would add another server to harden and maintain. This choice still depended on correct IAM permissions, working outbound routes, and a healthy SSM Agent; it was a different controlled path, not security by itself.
+
+I did not remove SSH from the target. The target still ran OpenSSH because SFTP is carried by SSH. I removed the public management path and used SSM to reach the local SSH service through a port-forwarding tunnel. That distinction helped me avoid treating “SSH is installed” and “SSH is exposed to the internet” as the same thing.
+
+I kept the roles separate too: my human AWS identity provisioned the lab, each instance role let its agent communicate with SSM, and the admin node's controller role handled its scoped SSM and S3 transfer work. This separation limited what I had to grant to each component.
+
 ### I connected to the admin node with Session Manager
 
 From the workstation, start a session to the admin node:
@@ -271,7 +288,7 @@ chmod 0644 /tmp/sftpdata.pub
 
 I had to troubleshoot the Ansible-over-SSM path because a working SSM shell did not guarantee that Ansible could stage its temporary files through S3. I checked the plugin and collection, bucket name and permissions, target access to S3, and the controller role before considering any network change. My original run finished with `ok=17`, `changed=3`, `unreachable=0`, and `failed=0`.
 
-## 3. I inspected the target before making changes
+### I inspected the target before changing access policy
 
 I opened a second SSM session directly to the target so I could inspect it before hardening and return to it for final checks:
 
@@ -349,9 +366,11 @@ df -hT /srv/sftp-data
 
 I expected filesystem type `ext4`, mount point `/srv/sftp-data`, and the new volume's UUID as the source. I would never rerun `mkfs` on an existing filesystem. The playbook I reconstructed does **not** format a disk, write `/etc/fstab`, or mount it; it checks the mount and stops if I have not prepared it. Keeping disk initialization separate from routine hardening means an Ansible rerun cannot erase the data volume.
 
-## 4. I hardened the target with Ansible
+### I applied SSH and account restrictions with Ansible
 
 After I realized the temporary playbook from the live run was gone, I reconstructed `ansible/playbooks/harden-target.yml` from the final state I had verified. It gives me a repeatable starting point, but it is not the original file. I review its variables and handlers before applying it to a new target.
+
+In the recorded lab, Ansible applied several target settings in one hardening run. I explain the SSH and account boundary here, then group UFW, AppArmor, auditd, unattended upgrades, and sysctl under the Linux operating-system layer in Step 3. That organization makes the purpose of each layer easier to follow; it does not imply I deployed a separate playbook for each one.
 
 On the admin node, install the declared collections and run the syntax check, then apply against the target inventory:
 
@@ -438,7 +457,7 @@ sudo sshd -T -C user=sftpdata,host=localhost,addr=127.0.0.1 \
 
 I added the `install -d` check because `/run/sshd` was missing during my first manual `sshd -T` check. Creating it restored the runtime directory; it did not change the persistent SSH policy. On a system where the service manager has already created it, this step is unnecessary. I used `sshd -T -C` to inspect the effective `Match` policy for `sftpdata`, rather than relying only on the text of the drop-in.
 
-## 5. I tested what the SFTP account could and could not do
+### I tested SFTP access and the boundaries around it
 
 ### I opened the SSM port-forwarding tunnel
 
@@ -534,7 +553,13 @@ I ran into a few issues that are worth remembering:
 - `sshd -T` initially could not run because `/run/sshd` did not exist. The runtime directory was created, after which the effective configuration could be checked. This is an ephemeral runtime prerequisite, not a reason to edit SSH policy blindly.
 - Some transcript output was accidentally concatenated (for example, `systemctl` checks, UFW status, and command text without separators). Re-run one command at a time and confirm the hostname before recording conclusions.
 
-## 6. I checked the host's security controls
+## 3. Linux operating system hardening — I added host-level defense in depth
+
+The AWS layer controlled network reachability; here I hardened the system that receives a permitted connection. I enabled a host firewall for a second network decision point, checked AppArmor and automatic security updates, installed auditd to leave evidence of sensitive configuration changes, and persisted kernel/network settings that reduce selected attack surfaces. I verified each control on the target through SSM so I would not mistake WSL or the admin node for the host I meant to secure.
+
+I added auditd because access controls tell me what should be allowed, while audit records help me review whether watched security-sensitive files were changed. I added the sysctl settings because secure network placement does not change kernel behavior such as forwarding, redirects, or source routing. I checked unattended upgrades because a hardened server still needs a safe way to receive security fixes. For AppArmor, I checked the actual loaded and enforcing profiles instead of assuming that an enabled service meant every process had a tailored profile.
+
+Ansible represented this work as one repeatable run, but the controls protect different things. The SSH policy and SFTP filesystem boundary limit the transfer identity; UFW filters at the host; AppArmor confines supported processes; auditd records watched changes; sysctl configures kernel behavior. I treated these as layers that complement each other, not as interchangeable checklist items.
 
 Run these checks in the **target's SSM shell**, not the workstation or admin node. Capture sanitized output and avoid publishing account IDs, internal addresses, access keys, or private key material.
 
@@ -786,7 +811,26 @@ I saw boot-time hardware/virtualization messages, a chrony clock correction, IRQ
 
 My target's vulnerability files reported that the kernel had attempted to clear CPU buffers, but no microcode was present and the SMT host state was unknown. I treated this as a platform-level observation, not proof that my Linux hardening failed. The target was a `t3.micro`; its guest view is not a direct assessment of the underlying AWS host.
 
-## 7. What I proved
+## 4. Validation and cleanup — I checked the result and closed the lab
+
+The fourth step brought the evidence together. I had tested the SFTP path while working through the access layer, then checked the host controls and logs here. The journal was useful because it preserved the context around mistakes and misleading outputs; those are part of how I learned to validate the system rather than simply rerunning commands until they looked right.
+
+### What I learned from the journal
+
+I kept the journal so the small failures and confusing moments would not disappear behind the final “it works” result. They helped me understand what each layer depended on and what a useful verification actually looked like:
+
+| What happened | What I learned and how I responded |
+| --- | --- |
+| AWS CLI was missing from one WSL shell, and at first I was mixing up the workstation, admin node, and target. | I fixed the `devsecops` user's PATH and checked the hostname, OS, profile, and AWS identity before interpreting results. A command's output is only useful when I know which machine and identity produced it. |
+| An SSM shell worked, but Ansible still had trouble transferring its temporary modules. | SSM connectivity alone did not prove the Ansible connection path was ready. I checked the plugin and collection, controller permissions, bucket name and permissions, and target's S3 route separately. |
+| SFTP rejected shell access and denied an upload to `/`. | Those were successful negative tests: the account was for file transfer only, and the chroot root was intentionally not writable. I used `/upload` for transfers and kept the root-owned chroot boundary intact. |
+| My first auditd enable attempt said the service unit did not exist. | The package installation had not finished when I tried to enable it. I waited for `auditd` and `audispd-plugins` to install, then enabled and verified the service and loaded rules. |
+| UFW printed usage text after I accidentally joined a command with `IPV6=yes`; another `ufw: command not found` came from WSL. | I reran the check as a clean, separate command on the target. The error was a reminder to verify the host before diagnosing a firewall. |
+| Terraform could not delete the S3 bucket while the public-key object was still in it. | I removed the temporary contents of the lab bucket and ran `terraform destroy` again. I then checked Terraform state and the AWS service states; I treated stale tag results and an unavailable S3 API check as limited evidence, not proof the resources were still running. |
+
+Some of these details already appear beside the relevant commands above; I bring them together here because that is exactly why I kept the journal. It lets me explain not only what I changed, but what I initially misunderstood, how I corrected it, and what evidence finally answered the question.
+
+### I reviewed what the tests proved
 
 By the end of the lab, I had confirmed that:
 
@@ -800,7 +844,7 @@ By the end of the lab, I had confirmed that:
 
 I collected the concise results in the [verification record](verification.md) and [sanitized hardening evidence](../evidence/hardening-results.md). When I publish evidence, I keep actual results separate from checks a future rebuild still needs to perform, and leave out private keys, raw Terraform state, personal identifiers, AWS credentials, and account-specific resource IDs.
 
-## 8. I destroyed the AWS lab when I was done
+### I destroyed the AWS lab when I was done
 
 Once I had finished the tests, I used Terraform to tear down the lab. My first destroy attempt stopped because the private S3 transfer bucket still held the uploaded SFTP public key. Terraform could not delete a non-empty bucket, so I emptied the lab bucket and ran destroy again:
 
@@ -815,19 +859,14 @@ Terraform reported `Destroy complete! Resources: 1 destroyed.`, and my state lis
 
 I recorded the destroy result and the independent checks I could complete afterward. Destroying the lab was part of the exercise: a NAT Gateway and other live resources can continue to cost money if I leave them running.
 
-## How I would repeat the lab
+### How I would repeat the four-step lab
 
-If I build the lab again, I will follow the same order:
+If I build the lab again, I will follow the same four steps:
 
-1. Confirm the AWS profile, account, Region, and target OS before changing resources.
-2. Review Terraform, initialize and validate it, then inspect the complete plan.
-3. Apply and wait for both instances to become SSM managed nodes.
-4. Prepare the admin node, SSM Ansible connection, scoped transfer bucket, inventory, and public SFTP key.
-5. Inspect the target baseline before applying host configuration.
-6. Review the reconstructed Ansible playbook, syntax-check it, then apply it.
-7. Prove both intended SFTP transfer and denied shell/chroot-root behavior through SSM port forwarding.
-8. Verify host controls individually on the target and keep sanitized evidence.
-9. Empty only the lab transfer bucket, run `terraform destroy`, and confirm Terraform state is empty.
+1. **Build the AWS foundation:** confirm my identity and Region, review the Terraform plan, deploy the private network and encrypted resources, and wait for both nodes to register with SSM.
+2. **Control access:** connect through SSM, configure the distinct instance/controller permissions, prepare the SFTP public key and separate chroot filesystem, then apply and verify the restricted account and SSH policy.
+3. **Harden Ubuntu:** configure UFW and the host controls, load audit rules, and verify persistent and live kernel settings.
+4. **Prove and close:** test a successful transfer and expected denials, review logs and service state, preserve sanitized evidence, empty only the lab bucket, run `terraform destroy`, and check that Terraform state is empty.
 
 What I took from the project was the value of proving both sides of a security control: the legitimate user could complete the transfer, and the same identity could not cross the boundaries I had set. I also saw how AWS access, Linux permissions, audit evidence, and cost management fit together in a small but realistic exercise.
 
