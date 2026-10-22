@@ -122,6 +122,8 @@ aws --version
 
 Having `aws` installed does not grant access to an AWS account. My first identity check returned `NoCredentials`. I needed an authorized AWS identity, a sign-in method, and a local profile that selected it.
 
+A **profile** is a named AWS CLI configuration. The Linux user `devsecops`, the IAM user `mds-devsecops-lab`, and the CLI profile `mds-devsecops-lab` are different things even though two names match.
+
 For my lab, I created a dedicated IAM user, enabled console access and MFA, then used browser-based `aws login` to obtain temporary CLI credentials. If your organization already provides an authorized IAM Identity Center role, use that existing access and its profile instead of creating a second IAM identity.
 
 <details>
