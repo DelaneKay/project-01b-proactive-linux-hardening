@@ -48,7 +48,7 @@ whoami
 sudo whoami
 ```
 
-**Checkpoint:** the first command identifies my ordinary account; the second returns `root` after elevation. This Linux account is separate from the AWS identity I will configure later.
+**Checkpoint:** the first command identifies my ordinary account; the second confirms that `sudo` can elevate privileges. This Linux account is separate from the AWS identity I configure later.
 
 ### 1.2 I checked Terraform and AWS CLI before trying to use them
 
@@ -59,7 +59,7 @@ terraform version
 aws --version
 ```
 
-Terraform manages the infrastructure files. The AWS Command Line Interface (CLI) lets me authenticate and query AWS from the terminal. The version commands showed whether the tools were available to my current user.
+Terraform manages the infrastructure files; the AWS Command Line Interface (CLI) lets me authenticate and query AWS. These version checks showed which tools were available to my current user.
 
 My Terraform check returned version `1.16.6`. AWS CLI was available under a different user but initially returned `command not found` for `devsecops`. I learned that installing a tool under root does not make a user-local installation available to every account.
 
@@ -71,7 +71,7 @@ For the missing AWS CLI, I used AWS's user-local `v2/install.sh` installer. The 
 /home/devsecops/.local/bin/aws --version
 ```
 
-I saved the PATH entry in `~/.bashrc` so new shells can find the user-installed AWS CLI. `export PATH` makes it available in the current shell, and `source ~/.bashrc` reloads the saved settings. The version checks confirm the AWS CLI and Terraform are available; `ansible --version` checks whether Ansible is installed on WSL. 
+I added the AWS CLI location to `PATH` for this shell and saved it in `~/.bashrc` for future shells. I then checked AWS CLI and Terraform again and checked whether Ansible was installed locally:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -87,13 +87,13 @@ The Ansible check returned `command not found`. After clarifying the three-machi
 
 ### 1.3 I established an AWS identity before using a named profile
 
-Having `aws` installed does not grant access to an AWS account. My first identity check returned `NoCredentials`. I needed an authorized AWS identity, a sign-in method, and a local profile that selected it.
+Having `aws` installed does not grant access to an AWS account. My first identity check returned `NoCredentials`, so I needed to authenticate the CLI before AWS could identify me or accept account changes.
 
-A **profile** is a named AWS CLI configuration. The Linux user `devsecops`, the IAM user `mds-devsecops-lab`, and the CLI profile `mds-devsecops-lab` are different things even though two names match.
+For this lab, I used a dedicated IAM user and a named AWS CLI profile. A profile is the local configuration that selects credentials and settings; the Linux user `devsecops`, IAM user `mds-devsecops-lab`, and CLI profile `mds-devsecops-lab` are separate identities.
 
-For my lab, I created a dedicated IAM user, enabled console access and MFA, then used browser-based `aws login` to obtain temporary CLI credentials. If your organization already provides an authorized IAM Identity Center role, use that existing access and its profile instead of creating a second IAM identity.
+For the initial account setup, I signed in with my existing root identity. I would use it to create a separate lab user, enroll MFA, and then sign in as that user with browser-based `aws login`, which supplies short-lived CLI credentials. An authorized IAM Identity Center role can provide this access when one is already available.
 
-My first identity check had no credentials. I then used the default browser-login flow for account bootstrap and selected the lab Region:
+I ran the identity check before signing in, then started browser sign-in and set the default Region:
 
 ```bash
 aws sts get-caller-identity
@@ -101,11 +101,9 @@ aws login
 aws configure set region us-east-1
 ```
 
-The Region command sets a location, not an access key. I confirmed the initial authenticated identity was root before creating the separate lab user.
+`aws login` opened browser sign-in; the Region setting selected where later requests would go, not the credentials. Once authenticated, I confirmed the active identity was root before creating the separate lab user.
 
-`get-caller-identity` shows which AWS identity is active, `aws login` starts browser sign-in for CLI use, and the region setting makes later AWS calls target `us-east-1`. 
-
-I initially used my already-authenticated root identity for account bootstrap, then moved to the dedicated IAM user. I ran these IAM commands with my initial root sign-in, before the named lab profile existed:
+With the root identity confirmed, I created the separate lab IAM user, granted it browser-based CLI sign-in and the permissions needed to provision this lab, then checked the attached policies. I ran these bootstrap commands before the named lab profile existed:
 
 ```bash
 aws iam create-user --user-name mds-devsecops-lab --query 'User.UserName' --output text
@@ -116,13 +114,9 @@ aws iam list-attached-user-policies --user-name mds-devsecops-lab
 
 `SignInLocalDevelopmentAccess` enabled browser-based CLI sign-in. `AdministratorAccess` supplied the human lab user's broad resource permissions; neither server received that administrator policy.
 
-`create-user` made the IAM identity, the two policy commands granted its CLI sign-in and lab permissions, and `list-attached-user-policies` checked which policies were attached.
+Next, I created the console login profile with a temporary password and required a password change at first sign-in. The shell stops if a step fails, restricts the temporary file, and removes it on exit; Python hides the password prompts, checks that the entries match, and writes the request for AWS.
 
-I created the console login profile through the CLI, using hidden Python password prompts and a private temporary JSON file. The initial profile required a password change at first sign-in.
-
-The shell stops on an error, restricts permissions on newly created files, creates a temporary filename, and arranges its removal on exit. Python prompts for the password without displaying it, checks both entries, and writes the short-lived request file. The final AWS call creates the console login profile and prints only its username. The profile requires a password change at first sign-in. I also enrolled an authenticator through the CLI; I did not set up MFA through the console workflow previously described here.
-
-To create the password, I used this block:
+I used this block to create the login profile:
 
 ```bash
 set -e
@@ -155,24 +149,19 @@ aws iam create-login-profile \
   --output text
 ```
 
-
 I created a virtual MFA device and scanned its private QR image. My first attempt to open the image from WSL failed with `explorer.exe: command not found`:
 
 ```bash
 explorer.exe "$(wslpath -w "$HOME/.aws/mds-devsecops-lab-mfa.png")"
 ```
 
-I used this workaround and opened the returned path in Windows File Explorer:
-
-The failed command tried to open the QR image from WSL. `wslpath` converts its Linux path into a Windows path that File Explorer can open.
+I used `wslpath` to convert the Linux image location into a Windows path that File Explorer could open:
 
 ```bash
 wslpath -w /home/devsecops/.aws/mds-devsecops-lab-mfa.png
 ```
 
-After switching back to `devsecops`, I reloaded the device serial in that shell:
-
-This query fetches the IAM MFA device serial into the current shell so the enrollment request can refer to the right authenticator. The printed message confirms the lookup without exposing the serial. 
+After switching back to `devsecops`, I loaded the virtual MFA device's serial into the current shell so the enrollment request could refer to the correct authenticator:
 
 ```bash
 export mfa_serial="$(aws iam list-virtual-mfa-devices \
@@ -180,7 +169,7 @@ export mfa_serial="$(aws iam list-virtual-mfa-devices \
   --output text)" && printf 'MFA device serial loaded for enrollment.\n'
 ```
 
-I entered two consecutive authenticator codes through hidden prompts. The temporary input file kept them out of the command line and was removed afterward:
+I entered two consecutive authenticator codes through hidden prompts. The script placed the enrollment request in a private temporary file, asked IAM to attach the authenticator, and removed the file afterward:
 
 ```bash
 python3 - <<'PY'
@@ -222,9 +211,7 @@ finally:
 PY
 ```
 
-I then verified enrollment with AWS:
-
-The script hides both one-time codes, stores the enrollment request in a private temporary file, asks IAM to attach the authenticator, and deletes the file afterward.
+I then verified that IAM had attached the authenticator:
 
 ```bash
 aws iam list-mfa-devices \
@@ -233,18 +220,14 @@ aws iam list-mfa-devices \
   --output text
 ```
 
-The result was `1`. I deleted the QR image after enrollment and kept all passwords and codes out of the repository.
-
-The query returns the number of MFA devices attached to this IAM user; `1` confirmed enrollment. I then checked the old identity and signed it out:
+The result was `1`, confirming that IAM had attached one MFA device. I deleted the QR image and kept passwords and codes out of the repository. I then checked the root identity and signed out:
 
 ```bash
 aws sts get-caller-identity --query 'Arn' --output text
 aws logout
 ```
 
-I chose `aws login` because its browser sign-in supplies **short-lived temporary credentials**, avoiding manually stored long-lived IAM access keys.
-
-`get-caller-identity` confirmed the root session before sign-out; `aws logout` removed its cached CLI sign-in credentials. The basic `aws configure` access-key prompts were not my authentication method. `aws configure get region` only reads configuration, while `aws configure sso` is a separate temporary-credential option. [AWS documents this browser-based temporary-credential flow](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html).
+`get-caller-identity` confirmed the root session before sign-out, and `aws logout` removed its cached CLI credentials. I used browser-based `aws login` for short-lived credentials instead of storing long-lived keys with the basic `aws configure` prompts. `aws configure get region` only reads the selected Region; `aws configure sso` is a separate temporary-credential method. [AWS documents this browser-based temporary-credential flow](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html).
 
 **Run in: local WSL, after the intended AWS identity is ready.**
 
@@ -254,13 +237,11 @@ aws sts get-caller-identity --profile mds-devsecops-lab
 aws configure get region --profile mds-devsecops-lab
 ```
 
-I selected my lab IAM user in the browser. `get-caller-identity` then confirmed the principal, and the Region check returned `us-east-1`.
-
-`aws login` created the named sign-in profile, `get-caller-identity` checked which user it selected, and `configure get region` verified its default location. I checked the full identity locally rather than publishing account details.
+I selected the lab IAM user in the browser. The identity check confirmed that principal, and the Region check returned `us-east-1`.
 
 **Problem I encountered:** console sign-in worked before the named CLI profile existed. The CLI therefore returned “The config profile could not be found.” Creating/authenticating that profile with `aws login --profile mds-devsecops-lab` resolved the missing-profile step. An expired CLI session later needs a new login; it is different from an expired IAM console password.
 
-**Password problem I encountered:** when the IAM console password needed resetting, renewing the CLI session alone could not fix it. I used the following password-reset block with my authorized `root-recovery` profile. That profile needed a valid administrator session before the block could work. This sets a new console password; it does not retrieve the old password or create access keys.
+**Password problem I encountered:** renewing the CLI session could not reset the IAM console password. I used the following block with my authorized `root-recovery` profile, which needed a valid administrator session. It prompts privately for a replacement password, writes the request to a restricted temporary file, removes that file on exit, and updates the console login profile. It does not retrieve the old password or create access keys.
 
 ```bash
 (
@@ -298,12 +279,7 @@ PY
 )
 ```
 
-
-`getpass` hides both entries, `umask 077` keeps the temporary file private, and `trap` removes it when the subshell exits.
-
-`set -e` stops if a step fails; the private-file and cleanup settings protect the temporary password request. Python hides and checks the new password entries. `update-login-profile` changes the IAM console password using the authorized recovery profile, and the final message confirms success. `PasswordResetRequired: False` means this replacement does not force another password change at next sign-in. Afterward I returned to `aws login --profile mds-devsecops-lab` and verified the IAM user's identity before continuing.
-
-I used the named `mds-devsecops-lab` profile and `us-east-1` explicitly for the subsequent AWS checks.
+The password update succeeded. I then returned to browser sign-in with the named `mds-devsecops-lab` profile and used `us-east-1` for subsequent AWS checks.
 
 **Checkpoint:** I know which AWS account, principal, and Region the commands will use. No infrastructure has been created yet.
 
@@ -483,9 +459,7 @@ terraform init
 terraform validate
 ```
 
-Terraform installed the signed AWS provider `6.69.1` and returned `Success! The configuration is valid.
-
-` I reviewed the infrastructure before applying it: private instances, no inbound security-group rules, encrypted volumes, and the instance permissions. Validation checks configuration syntax; the security choices still needed review.
+Terraform downloaded the signed AWS provider `6.69.1` and reported `Success! The configuration is valid.` I then reviewed the planned design—private instances, no inbound security-group rules, encrypted volumes, and scoped instance permissions—because syntax validation alone does not assess those choices.
 
 ### 1.8 I deployed the infrastructure and used its identifiers
 
@@ -518,7 +492,7 @@ aws ssm start-session --target i-0cce45e09ec35a12a \
 
 The prompt now belongs to the target EC2.
 
-This opens an IAM-authorized shell on the private target through Systems Manager. **Run the following inside that target session:**
+The SSM session opens an IAM-authorized shell on the private target. I confirmed the prompt belonged to EC2, then checked the host, account, OS, kernel, listeners, and running services. **Run these checks inside the target session:**
 
 ```bash
 hostname
@@ -529,9 +503,9 @@ sudo ss -lntup
 systemctl list-units --type=service --state=running --no-pager
 ```
 
-My target was Ubuntu 24.04.5 on an AWS kernel. `hostname` and `whoami` identify the host and account; the OS and kernel checks confirm the platform. `ss` lists listening network services, and `systemctl` lists running services so I can understand what is exposed and running. If this check shows `microsoft-standard-WSL2`, I am still on the workstation. I made that mistake during the lab and corrected it before interpreting missing packages or firewall output.
+My target reported Ubuntu 24.04.5 and an AWS kernel. The checks confirmed I was on the EC2 host and showed its listening services. I had previously mistaken WSL output for target output, so I used the hostname and kernel to verify the machine before interpreting later checks.
 
-SSH listened on local port 22, alongside resolver and time-service sockets. That inventory tells me which programs listen; reachability also depends on AWS network controls. I recorded this baseline before changing the account or SSH policy.
+SSH listened on local port 22, alongside resolver and time-service sockets. That inventory showed which programs listened before I changed the account or SSH policy; reachability also depends on AWS network controls.
 
 **Checkpoint:** I identified the target before interpreting its service and firewall output.
 
@@ -540,7 +514,6 @@ SSH listened on local port 22, alongside resolver and time-service sockets. That
 The 5-GiB disk created by Terraform is a block device. SFTP needs a mounted filesystem. I chose `/srv/sftp-data` as the server-side storage location and future chroot root. A **chroot** gives the SFTP account a restricted filesystem view; its `/` will represent this directory.
 
 I selected a separate data volume for the target:
-
 
 The data mount used `/srv/sftp-data` on the separate disk. Its root-owned chroot and writable upload directory are described below.
 
@@ -561,8 +534,6 @@ My client used the dedicated key file `~/.ssh/mds-linux-hardening-1b-sftpdata`. 
 ### 2.6 I configured Ansible to reach the private target
 
 The controller used `amazon.aws.aws_ssm` with the target instance ID, Region, and transfer bucket. The published [inventory example](../ansible/inventory/hosts.example.yml) and [collection requirements](../ansible/requirements.yml) document those settings. SSM shell access and Ansible module transfer have different dependencies: Ansible also needed S3 connectivity and the controller's scoped permissions.
-
-
 
 ### 2.7 I reviewed the account, filesystem, and SSH policy before applying it
 
@@ -644,7 +615,7 @@ fi
 
 AppArmor adds process-specific restrictions beyond ordinary file ownership.
 
-`is-enabled` checks whether AppArmor starts at boot, `is-active` checks whether it runs now, and `aa-status` shows which profiles are loaded and enforcing. Installing it is not enough; I need to know which profiles are loaded and enforcing.
+I checked both whether AppArmor starts at boot and whether it was running, then inspected its loaded and enforcing profiles. A running service alone does not show which processes are actually confined.
 
 ```bash
 systemctl is-enabled apparmor
@@ -652,7 +623,7 @@ systemctl is-active apparmor
 sudo aa-status
 ```
 
-I also checked the package status: `dpkg-query` reports whether AppArmor and its utility package are installed and their versions. 
+I also checked the installed package versions, including whether the utilities needed for `aa-status` were present:
 
 ```bash
 dpkg-query -W -f='${Status} ${Version}\n' apparmor apparmor-utils
@@ -662,9 +633,7 @@ AppArmor was installed; `apparmor-utils` was not installed.
 
 My results were `enabled` and `active`, with 122 profiles loaded and 26 enforcing. `chronyd` and `rsyslogd` were among the enforced processes. The SSM Agent's profile was in complain mode. I read those actual states instead of assuming every process was confined because the service ran.
 
-Next I checked the automatic-update service and its log:
-
-The two `systemctl` checks show whether unattended upgrades are configured to start and currently running. `tail` shows recent activity, including which update origins were allowed and whether packages were upgraded. 
+The service checks show whether unattended upgrades start at boot and are running now; the log shows their recent activity and allowed package origins. I checked these together:
 
 ```bash
 systemctl is-enabled unattended-upgrades
@@ -674,9 +643,7 @@ sudo tail -n 30 /var/log/unattended-upgrades/unattended-upgrades.log
 
 My service was enabled and active. Its log showed allowed Ubuntu Noble/security origins and no packages eligible at that particular run. I also reviewed the pasted allowed-origins configuration; the log is evidence of the run at that time.
 
-I checked for an explicit automatic-reboot setting:
-
-This searches APT's effective configuration for an automatic-reboot policy, to determine whether unattended upgrades may restart the machine. 
+This check looks for an automatic-reboot setting in APT's effective configuration:
 
 ```bash
 sudo apt-config dump | grep -i 'Unattended-Upgrade::Automatic-Reboot'
@@ -686,7 +653,7 @@ That query returned no matching setting. The separate reboot-required check repo
 
 The unattended-upgrades log confirmed a run, and I left the existing configuration in place.
 
-**Checkpoint:** I recorded the actual AppArmor enforcement state, unattended-update configuration, and available log evidence.
+**Checkpoint:** I confirmed the actual AppArmor enforcement state, unattended-update configuration, and recent log activity.
 
 ### 3.3 I checked the host firewall, then verified management still worked
 
@@ -700,9 +667,7 @@ sudo ufw status numbered
 sudo ss -lntup
 ```
 
-Before enabling UFW, I inspected both IP families:
-
-These commands show the IPv4 and IPv6 packet-filter policies; both initially allowed input, forwarding, and output. 
+Before enabling UFW, I inspected the current IPv4 and IPv6 packet-filter policies. Both checks initially showed whether input, forwarding, and output were accepted:
 
 ```bash
 sudo iptables -S
@@ -713,7 +678,7 @@ Both outputs showed `ACCEPT` policies for INPUT, FORWARD, and OUTPUT.
 
 Before the lab changes, UFW was inactive. After enabling it manually, I verified `active`, default `deny (incoming)`, `allow (outgoing)`, low logging, and `IPV6=yes`. There is no inbound SSH exception because the management path is SSM.
 
-These are the manual commands I used to establish the policy; they are also a correction sequence if the expected settings are absent:
+I set UFW to deny incoming connections and allow outbound traffic, then enabled it and checked the resulting policy. I already had SSM access before enabling the firewall; an SSH-managed host needs its management rule arranged first.
 
 ```bash
 sudo ufw default deny incoming
@@ -721,10 +686,6 @@ sudo ufw default allow outgoing
 sudo ufw --force enable
 sudo ufw status verbose
 ```
-
-`--force` suppresses the interactive enable prompt.
-
-The first two UFW settings deny new incoming traffic and allow outbound traffic. `--force enable` activates the firewall at startup; the final status check confirms the applied policy. I had an SSM management path before doing this. An SSH-only host needs its management rule arranged first; the sequence here is specific to this SSM lab.
 
 **Problem I encountered:** I accidentally pasted `ufw status numbered` together with `IPV6=yes`, which produced a syntax error. I reran the command on its own. Earlier, `ufw: command not found` came from WSL, not the target. I checked the host instead of installing packages on the wrong machine.
 
@@ -762,7 +723,7 @@ sudo auditctl -s
 sudo auditctl -l
 ```
 
-The original empty setup reported `No rules`. I added persistent watches for the following paths. These are the nine watch definitions I added:
+The active audit rules were initially empty, so I added persistent watches for account files, sudo policy, SSH configuration, and UFW. In each line, `-w` selects a path, `-p wa` watches writes and attribute changes, and `-k` assigns a searchable event key:
 
 ```text
 -w /etc/passwd -p wa -k identity
@@ -776,7 +737,7 @@ The original empty setup reported `No rules`. I added persistent watches for the
 -w /etc/ufw -p wa -k firewall
 ```
 
-I loaded the saved rules and checked the active definitions before generating a test event:
+I checked the saved rule file, loaded the rules into the running kernel, then verified the active list and audit status before generating a test event:
 
 ```bash
 sudo augenrules --check
@@ -785,14 +746,11 @@ sudo auditctl -l
 sudo auditctl -s
 ```
 
-`-w` watches a path, `-p wa` selects writes and attribute changes, and `-k` gives the event a searchable key.
-
-`augenrules --check` checks the saved rules, `--load` activates them, `auditctl -l` verifies the active list, and `auditctl -s` checks the audit subsystem status. These lines define which identity, privilege, SSH, and firewall paths I want auditd to watch. The `identity` key groups account files; `privileged-access` groups sudo configuration. `augenrules --load` puts the persistent definitions into the active kernel rule set. I expected all nine watches in `auditctl -l`; later checks showed zero lost events and backlog limit 8192.
+After loading, `auditctl -l` showed the nine watches. The `identity` key grouped account-file events and `privileged-access` grouped sudo configuration; the other keys identified SSH and firewall changes. The status check later showed zero lost events and a backlog limit of 8192.
 
 **Problem I encountered:** pasting `auditctl -s` twice onto one line produced “Too many options.” Running one clean status command fixed that input error. The separate status fields matter: `enabled 1` describes auditing state, while `lost 0` indicates no events lost at that check.
 
 Next I inspected the log-retention settings, so the audit output would not grow without bounds:
-
 
 My policy was:
 
@@ -853,9 +811,7 @@ sudo sysctl kernel.randomize_va_space kernel.dmesg_restrict kernel.kptr_restrict
 
 My initial inspection found `send_redirects` and `accept_source_route` still enabled in the default/interface settings.
 
-The `sysctl` query reads the current kernel hardening values so I can identify unsafe settings before changing them. The captured target output identifies the interface as `ens5`.
-
-I disabled outgoing redirects with:
+I saved the outgoing-redirect settings in a persistent sysctl file. The quoted heredoc writes the values literally, and `sysctl -p` applies them to the running kernel:
 
 ```bash
 sudo tee /etc/sysctl.d/99-linux-hardening-network.conf >/dev/null <<'EOF'
@@ -866,12 +822,9 @@ EOF
 sudo sysctl -p /etc/sysctl.d/99-linux-hardening-network.conf
 ```
 
-The quoted heredoc writes the lines literally; `sysctl -p` applies that file.
-
-`tee` saves the selected redirect settings in a persistent sysctl file. I then load that file so the running kernel uses the policy. This manual block replaces the whole named file, while the playbook writes additional host settings to the same path. On a playbook-managed rebuild, inspect its complete file and apply that instead of replacing it with this shorter historical block.
+The manual block replaced the whole named file, while the playbook writes additional host settings to the same path. On a playbook-managed rebuild, inspect its complete file and apply that instead of replacing it with this shorter historical block.
 
 I subsequently corrected source-route acceptance too. The `all`, `default`, and `ens5` values read back as zero. I checked the live kernel values:
-
 
 ```bash
 sudo sysctl -p /etc/sysctl.d/99-linux-hardening-network.conf
@@ -895,7 +848,7 @@ sudo sysctl \
 
 My corrected `all`, `default`, and `ens5` redirect/source-route settings read back as `0`.
 
-`sysctl -p` reapplies the saved settings; the following `sysctl` query reads back live values across kernel, filesystem, IPv4, and IPv6 controls. I checked all three because looking only at `all` can hide a different interface/default value. These were the values and their purposes:
+The live-value check reloaded the saved file and read back kernel, filesystem, IPv4, and IPv6 controls. I checked both the `all` and interface/default values because they can differ. The resulting values and purposes were:
 
 | Setting | Recorded value | Intended effect |
 | --- | ---: | --- |
@@ -915,6 +868,8 @@ My corrected `all`, `default`, and `ens5` redirect/source-route settings read ba
 
 ### 3.6 I reviewed service health and logs after the changes
 
+I checked for failed services, confirmed `rsyslog` was active, measured journal storage, and reviewed warnings since the start of the day:
+
 ```bash
 systemctl --failed --no-pager
 sudo systemctl is-active rsyslog
@@ -922,9 +877,7 @@ sudo journalctl --disk-usage
 sudo journalctl -p warning --since today --no-pager
 ```
 
-My failed-unit check returned `0 loaded units listed`; rsyslog was active and the systemd journal used 38.3 MiB.
-
-`systemctl --failed` checks for failed services, `is-active` checks the logging service, and `journalctl --disk-usage` reports stored log size. The warning query helps review recent system events for issues. I reviewed boot-time virtual-hardware notices, a clock correction, IRQ-affinity messages, and a UFW block event in context. A logged block showed UFW had denied a packet; it did not mean SFTP accepted that packet.
+My checks found no failed units, `rsyslog` was active, and the systemd journal used 38.3 MiB. The warning output included boot-time virtual-hardware notices, a clock correction, IRQ-affinity messages, and a UFW block. In context, the UFW entry showed a denied packet, not accepted SFTP traffic.
 
 The kernel also reported MDS/MMIO CPU notices.
 
@@ -935,7 +888,7 @@ cat /sys/devices/system/cpu/vulnerabilities/mds
 cat /sys/devices/system/cpu/vulnerabilities/mmio_stale_data
 ```
 
-The guest reported attempted buffer clearing, no microcode, and unknown SMT host state. I recorded the actual output without treating it as a complete assessment of AWS's underlying host. This inspection did not require changing SSH or firewall rules.
+The guest reported attempted buffer clearing, no microcode, and unknown SMT host state. That output describes the guest's view and does not establish the state of AWS's underlying host. This inspection did not require changing SSH or firewall rules.
 
 **Checkpoint:** I have reviewed host health, the evidence from each control, and any remaining messages. I can now test the actual file-transfer workflow.
 
@@ -957,7 +910,7 @@ I reached the target's SFTP service through local port `2222` and compared the s
 
 ### 4.2 I uploaded and downloaded the text file, then compared its hashes
 
-**Recorded at: the `sftp>` prompt on WSL. Enter the text after the prompt, not the prompt itself.**
+**At the `sftp>` prompt on WSL:** enter the text after the prompt, not the prompt itself.
 
 ```text
 sftp> get /upload/mds-sftp-test.txt /tmp/mds-sftp-downloaded.txt
@@ -1064,5 +1017,5 @@ aws s3api list-buckets \
 
 My checks showed both instances `terminated`, the NAT Gateway `deleted`, the queried endpoint absent, and no volumes in the filtered volume result. Deleted instances can remain visible briefly; later their IDs can return not found. The tagging API still listed old ARNs, which did not override the direct service states. My S3 listing could not reach its endpoint at that time, so I treated the Terraform deletion separately from that unavailable check.
 
-**Final checkpoint:** Terraform state is empty, direct service checks show no active lab resources in the queried scope, and any query error is recorded rather than interpreted as success. My demonstration ended with the infrastructure torn down and the documentation available to repeat the work.
+**Final checkpoint:** Terraform state is empty, and direct service checks showed no active lab resources in the queried scope. I finished the demonstration by tearing down the infrastructure and keeping the configuration available to repeat the work.
 
