@@ -68,7 +68,7 @@ sudo whoami
 
 ### 1.2 I checked Terraform and AWS CLI before trying to use them
 
-**Run in: local WSL, as the ordinary user.**
+I checked these versions from my ordinary WSL account:
 
 ```bash
 terraform version
@@ -245,7 +245,7 @@ aws logout
 
 `get-caller-identity` confirmed the root session before sign-out, and `aws logout` removed its cached CLI credentials. I used browser-based `aws login` for short-lived credentials instead of storing long-lived keys with the basic `aws configure` prompts. `aws configure get region` only reads the selected Region; `aws configure sso` is a separate temporary-credential method. [AWS documents this browser-based temporary-credential flow](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html).
 
-**Run in: local WSL, after the intended AWS identity is ready.**
+I signed in from WSL with the lab profile, then checked the active identity and default Region:
 
 ```bash
 aws login --profile mds-devsecops-lab
@@ -318,11 +318,7 @@ I began with [versions.tf](../terraform/versions.tf), [variables.tf](../terrafor
 
 I had working tools, credentials, and source files. Next I needed facts to inform the design: an unused network range, a supported Availability Zone and instance size, the intended Ubuntu image, and the account's storage-encryption default.
 
-**Run in: local WSL, with the profile from Phase 1.3. These are read-only queries.**
-
-I checked existing VPCs, available zones, and offerings for both T2 and T3 before selecting the network and instance sizes. I confirmed the existing VPC range, selected an available AZ, and checked the candidate instance sizes.
-
-I then checked the Ubuntu image and EBS encryption defaults:
+From WSL, I used my lab profile for read-only AWS queries. I first checked existing VPCs, Availability Zones, and T2/T3 offerings to select the network and instance sizes, then checked the Ubuntu image and EBS encryption defaults:
 
 ```bash
 aws ssm get-parameter \
@@ -466,9 +462,7 @@ This was recovery guidance for the local workstation, not an AWS change.
 
 ### 1.7 I initialized and validated the Terraform configuration
 
-**Run in: local WSL, in `~/mds-aws-linux-hardening-1b`.**
-
-I set the Region to `us-east-1`, used profile `mds-devsecops-lab`, and reviewed the project variables before deployment. The published inputs are linked in [variables.tf](../terraform/variables.tf) and [terraform.tfvars.example](../terraform/terraform.tfvars.example).
+Before initializing and validating the Terraform configuration, I set the Region to `us-east-1`, selected profile `mds-devsecops-lab`, and reviewed the project variables in [variables.tf](../terraform/variables.tf) and [terraform.tfvars.example](../terraform/terraform.tfvars.example). I ran the checks from `~/mds-aws-linux-hardening-1b` in WSL:
 
 ```bash
 terraform init
@@ -499,7 +493,7 @@ Both nodes needed a working SSM Agent, instance permissions, and outbound connec
 
 I kept separate terminals for WSL, the target, and later the admin controller. A command that checks the wrong host can give a perfectly valid but irrelevant answer.
 
-**Run in: local WSL, in a new terminal using the target instance ID and lab profile.** `aws ssm start-session` opens an interactive management session on the chosen private target.
+From a new WSL terminal, I opened an interactive Session Manager connection to the private target using its instance ID and lab profile:
 
 ```bash
 aws ssm start-session --target i-0cce45e09ec35a12a \
@@ -508,7 +502,7 @@ aws ssm start-session --target i-0cce45e09ec35a12a \
 
 The prompt now belongs to the target EC2.
 
-The SSM session opens an IAM-authorized shell on the private target. I confirmed the prompt belonged to EC2, then checked the host, account, OS, kernel, listeners, and running services. **Run these checks inside the target session:**
+The SSM session opens an IAM-authorized shell on the private target. After confirming the prompt belonged to EC2, I checked its hostname, account, OS, kernel, listening ports, and running services:
 
 ```bash
 hostname
@@ -602,7 +596,7 @@ I checked the restrictions with the transfer and denied-action tests documented 
 
 An AWS network boundary controls reachability, while Linux controls what happens on the machine. I inspected the OS controls and applied the missing settings in the target SSM session. The commands and outputs below follow those checks and manual corrections.
 
-**All commands in this layer run in the target SSM session.** Start with `hostname` whenever returning to a terminal. I previously confused WSL and EC2 results, so this became a habit.
+I ran every command in this layer inside the target's SSM session. Whenever I returned to a terminal, I started with `hostname` to confirm which machine I was using; earlier, I had mistaken WSL output for EC2 output.
 
 ### 3.1 I checked packages, updates, and reboot requirements
 
@@ -916,7 +910,7 @@ The client key proves my transfer user's identity to the server.
 
 `ssh-keygen` prints the target's public host-key fingerprint so I can verify the server before trusting the SFTP connection. The server's **host key** lets my client verify which server it reached. I checked the host fingerprint over the existing SSM management channel first.
 
-**Run in: target SSM session.**
+I checked the target's SSH host-key fingerprint from its SSM session:
 
 ```bash
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
@@ -926,7 +920,7 @@ I reached the target's SFTP service through local port `2222` and compared the s
 
 ### 4.2 I uploaded and downloaded the text file, then compared its hashes
 
-**At the `sftp>` prompt on WSL:** enter the text after the prompt, not the prompt itself.
+At the SFTP prompt in WSL, I entered the commands below without copying the prompt itself:
 
 ```text
 sftp> get /upload/mds-sftp-test.txt /tmp/mds-sftp-downloaded.txt
@@ -982,7 +976,7 @@ I kept the [verification record](verification.md) and [hardening evidence](../ev
 
 ### 4.5 I removed the temporary files and destroyed the AWS infrastructure
 
-Finishing the demonstration included removing the running resources. I closed my SFTP/tunnel sessions and exited the EC2 shells. **Run the remaining commands in local WSL**, using the same repository and Terraform state that created this lab.
+To finish the demonstration, I closed the SFTP and tunnel sessions and exited the EC2 shells. I then returned to the WSL project directory that held the Terraform configuration and state before removing the running resources.
 
 My first destroy attempt encountered `BucketNotEmpty`. The bucket still contained `sftpdata/sftpdata.pub`. I removed the remaining contents and retried Terraform.
 
