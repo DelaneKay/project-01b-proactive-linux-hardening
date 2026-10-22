@@ -1,20 +1,26 @@
-# Project 1B — Proactive Linux server hardening walkthrough
+# My Project 1B proactive Linux hardening journey
 
-This walkthrough documents the Project 1B lab from its design decisions through validation and teardown. It is based on the saved learning journal and the outputs captured during the run. The aim is to make the work reproducible and explain what each control was meant to accomplish, what evidence demonstrated it, and what the evidence does not prove.
+- **Core technologies:** AWS, Terraform, Systems Manager, Ansible, Ubuntu, OpenSSH/SFTP, UFW, AppArmor, auditd, and Linux sysctl.
+- **Problem I addressed:** I wanted to provide a private file-transfer service without exposing SSH to the internet or giving the transfer account a shell or access to the rest of the server.
+- **Outcome:** I built a private AWS lab, hardened the Ubuntu target, proved the SFTP account could transfer a file only within its upload area, checked the host controls, and used Terraform to destroy the lab when I was finished.
 
-> **Reconstruction note:** The Terraform configuration in this repository is the source used for the deployment. The temporary Ansible playbook used during the lab was not retained. `ansible/playbooks/harden-target.yml` is a reconstruction of the verified target configuration, not a byte-for-byte copy of the original playbook. It passed a syntax check; the original successful Ansible run is recorded in the journal (17 ok, 3 changed, 0 unreachable, 0 failed). Do not represent the reconstructed playbook as the exact artifact that produced that run.
+This is my account of Project 1B, from the choices I made before deployment to the tests I ran and the teardown afterward. I used the saved journal and captured outputs to put the steps in order. I explain what I was trying to prove as I go, because a list of commands alone does not show why the controls mattered.
 
-## 1. Lab objective and security problem
+Project 1A began with an existing server that already had unsafe settings; I investigated and remediated it. For Project 1B, I started from the other direction: I designed a small private environment, configured a Linux workload with least privilege, then tested the intended access and the boundaries around it. The workload used synthetic customer-register data in a controlled lab. This was not a real incident or a production service.
 
-Project 1A investigated and remediated a server that already had problematic settings. Project 1B took the proactive approach: build a small private AWS environment, configure a Linux file-transfer workload with least privilege from the start, test both its allowed and denied behaviors, and then destroy the lab.
+> **Reconstruction note:** The Terraform configuration in this repository is the source used for the deployment. I did not retain the temporary Ansible playbook from the original run. I later reconstructed `ansible/playbooks/harden-target.yml` from the verified target configuration; it is not a byte-for-byte copy of the original. I syntax-checked the reconstructed playbook. The original successful Ansible run was recorded as `ok=17`, `changed=3`, `unreachable=0`, `failed=0`, but that recap cannot prove the reconstructed file produced it.
 
-The fictional workload was a private SFTP drop for synthetic customer-register data. The security problem was to provide a practical file-transfer path without giving a transfer user an interactive shell, access to the rest of the filesystem, write access outside its upload area, or a public SSH endpoint. A network boundary alone would not establish those host-level guarantees. The project combined private AWS networking and Session Manager access with Linux identity, OpenSSH, filesystem, firewall, audit, and kernel-network controls.
+## Why I built this lab
 
-The lab used synthetic data only. It was not a production deployment or a real customer-data service.
+My goal was to build a small private AWS environment for a Linux file-transfer workload, apply least-privilege controls before using it, test both the allowed and denied behavior, and then destroy the lab.
 
-## 2. Design and architecture
+I framed the workload as a private SFTP drop for synthetic customer-register data. I wanted the user to transfer files without getting a shell, browsing the host filesystem, writing outside the upload area, or connecting through public SSH. I knew a private subnet alone could not enforce all of those host-level restrictions, so I combined AWS network controls with Linux identity, OpenSSH, filesystem, firewall, audit, and kernel-network settings.
 
-The operator's workstation ran Terraform and AWS CLI. An EC2 admin node ran Ansible and managed the target through the AWS Systems Manager (SSM) connection plugin. Both EC2 instances were private and had no public IP addresses or inbound security-group rules. The target's local `sshd` still listened on port 22; administrators and the SFTP test reached it through SSM, not through an Internet-facing SSH rule.
+I used synthetic data only. This was a learning exercise, not a production deployment or a real customer-data service.
+
+## 1. I designed a private AWS lab
+
+I used my WSL workstation for Terraform and the AWS CLI. A separate EC2 admin node ran Ansible and managed the target through the AWS Systems Manager (SSM) connection plugin. I kept both EC2 instances in private subnets, with no public IPs and no inbound security-group rules. The target's local `sshd` still listened on port 22, but I reached it through SSM rather than opening SSH to the internet.
 
 ```text
 Operator workstation (WSL: Terraform + AWS CLI)
@@ -34,7 +40,7 @@ Private subnet egress -> one public-subnet NAT Gateway -> Internet
 Private S3 transfer bucket -> S3 Gateway VPC endpoint
 ```
 
-| Component | Recorded configuration | Why it was used |
+| Component | What I deployed or checked | Why I chose it |
 | --- | --- | --- |
 | Region and AZ | `us-east-1`, one AZ (`us-east-1a`) | Small, cost-conscious single-AZ lab |
 | VPC | `10.20.0.0/16` | Isolated address space for the exercise |
@@ -47,24 +53,24 @@ Private S3 transfer bucket -> S3 Gateway VPC endpoint
 | Ansible transfer | Private encrypted S3 bucket with lifecycle cleanup and S3 Gateway endpoint | The SSM Ansible connection plugin temporarily transfers module content through S3 |
 | Instance IAM | Custom minimal SSM agent channel policy; separate, scoped controller permissions | Avoid broad administrator permissions and separate agent duties from controller duties |
 
-The NAT Gateway was a deliberate lab trade-off: it costs more per hour than a NAT instance, but avoids adding another Linux server to patch and operate. One NAT Gateway in one AZ is a cost-saving lab design, not a highly available production pattern. The SFTP account was also deliberately separate from the administrative identity: a file-transfer key should not imply `sudo` or operating-system control.
+I chose one NAT Gateway instead of a NAT instance. It cost more per hour, but I did not have to add another Linux server to patch and operate. Keeping the lab to one AZ saved resources, though it is not a highly available production design. I also kept file transfer separate from administration: an SFTP key should not give its owner `sudo` or control of the operating system.
 
-### 2.1 Follow the management and data paths
+### How I routed management and data traffic
 
-There were two distinct uses of SSM in this design:
+I used SSM in two distinct ways:
 
-1. **Administration:** the workstation asked Systems Manager to start a shell session to the admin or target node. The SSM Agent on the instance opened outbound control/data channels; the operator did not connect to port 22 on the instance from the Internet.
-2. **SFTP test:** the workstation asked SSM to forward local port `2222` to target port `22`. The SFTP client connected to `127.0.0.1:2222`, while the target still handled a normal SSH/SFTP protocol session locally.
+1. **Administration:** I asked Systems Manager to open a shell on the admin or target node. The instance SSM Agent opened outbound control and data channels, so I did not need to connect to port 22 from the internet.
+2. **SFTP test:** I asked SSM to forward my local port `2222` to target port `22`. My SFTP client connected to `127.0.0.1:2222`, and the target handled an ordinary SSH/SFTP session locally.
 
-Ansible used a third, related path: its controller process on the admin node asked SSM to run commands on the target, and its connection plugin staged temporary module files through the private S3 bucket. The S3 Gateway endpoint gave VPC traffic a path to S3 without sending that bucket traffic through a public internet route. These mechanisms solve different problems: SSM provides an authenticated management channel, S3 stages Ansible payloads, and the target's OpenSSH server enforces the Linux SFTP policy.
+Ansible added a third path. The controller on my admin node used SSM to run tasks on the target, while the connection plugin staged temporary module files through my private S3 bucket. The S3 Gateway endpoint routed that traffic through AWS rather than through the public internet. Each component had a different job: SSM carried management traffic, S3 staged Ansible files, and OpenSSH enforced the target's SFTP restrictions.
 
-The security groups and host firewall are also separate enforcement layers. A listener on target port 22 is necessary for SFTP, but does not by itself make the service reachable from an untrusted network. The EC2 security group had no inbound rules; UFW on the target added a host-level deny-incoming policy. SSM port forwarding was the intentionally authorized path used in the lab.
+I treated the security group and the host firewall as separate enforcement layers. The target needed a local listener on port 22 for SFTP, but that alone did not make it reachable from an untrusted network. I kept the EC2 security group free of ingress rules and set UFW to deny incoming traffic. For this lab, I deliberately used SSM port forwarding as the authorized path.
 
-## 3. Prepare and provision the AWS lab
+## 2. I prepared and provisioned the AWS lab
 
-### 3.1 Confirm the operator identity and configuration
+### I confirmed my AWS identity and workstation setup
 
-The commands below were run from the WSL project directory on the workstation. The profile name in the recorded lab was `mds-devsecops-lab`; use your own authorized lab profile when reproducing the project. Confirm the identity before any change so the plan and apply run under the account you intend.
+I ran these checks from my WSL project directory with the `mds-devsecops-lab` profile. If I repeat the lab in another account, I will first change to my own authorized profile and check which AWS identity it resolves to. That simple check helps me catch a wrong-account mistake before I create anything.
 
 ```bash
 cd ~/mds-aws-linux-hardening-1b
@@ -73,9 +79,9 @@ terraform version
 aws --version
 ```
 
-The journal recorded Terraform 1.16.6 and AWS CLI v2.38.3 on WSL. An early `aws --version` check returned “command not found” when run as the non-root `devsecops` user even though the CLI was available in a different shell context. The resolution was to run the checks and Terraform as the ordinary `devsecops` user with its configured profile and PATH, rather than confusing that local WSL environment with either EC2 node. The target itself was a separate Ubuntu 24.04.5 EC2 host; WSL later reported Ubuntu 26.04 on a Microsoft WSL2 kernel. Always confirm the current shell and host before interpreting package, kernel, or firewall results.
+My journal notes that I used Terraform 1.16.6 and AWS CLI v2.38.3 on WSL. An early `aws --version` check returned “command not found” when run as the non-root `devsecops` user even though the CLI was available in a different shell context. I resolved it by using the ordinary `devsecops` account with its own profile and PATH. That distinction mattered: WSL was my workstation, separate from both EC2 nodes. My target was a separate Ubuntu 24.04.5 EC2 host, while WSL reported Ubuntu 26.04 on a Microsoft WSL2 kernel. I learned to check the hostname and OS before interpreting package, kernel, or firewall output.
 
-The AWS CLI was installed under the WSL user's local directory. When the executable exists but `aws` is not found in a fresh shell, the journal's PATH fix was:
+I installed the AWS CLI under my WSL user's local directory. When a fresh shell could not find `aws`, I fixed my PATH like this:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -84,9 +90,9 @@ source ~/.bashrc
 aws --version
 ```
 
-The first line fixes the current shell; the `.bashrc` line makes the change persist for new interactive Bash shells. The recorded executable was `/home/devsecops/.local/bin/aws`. Do this as the intended WSL user, not as root, so the CLI and AWS login cache remain in the same home directory.
+The first line fixed my current shell; the `.bashrc` entry made it persist in later interactive shells. My executable was `/home/devsecops/.local/bin/aws`. I made this change as `devsecops`, not root, so the CLI and its sign-in cache stayed in the same home directory.
 
-The recorded workstation used AWS CLI browser sign-in for temporary credentials. If the profile's session has expired, authenticate interactively, then verify both the AWS principal and Region before provisioning:
+I used AWS CLI browser sign-in to obtain temporary credentials. When that session expires, I sign in again and verify the principal and Region before provisioning:
 
 ```bash
 aws login --profile mds-devsecops-lab
@@ -97,9 +103,9 @@ aws iam list-mfa-devices --user-name mds-devsecops-lab \
   --query 'length(MFADevices)' --output text
 ```
 
-The journal confirmed that the CLI identity was the named IAM lab user, the Region was `us-east-1`, and one MFA device was attached. Do not paste the full ARN/account ID, browser authorization values, password, MFA seed, QR image, or one-time codes into documentation. The lab user had broad `AdministratorAccess` during this exercise; that was a human operator permission choice, not an instance role. For a production or portfolio reproduction, prefer a role or IAM Identity Center permission set scoped to the deployment, and avoid account-wide administrator access where practical.
+I confirmed that the CLI was using my named IAM lab user, the Region was `us-east-1`, and one MFA device was attached. Do not paste the full ARN/account ID, browser authorization values, password, MFA seed, QR image, or one-time codes into documentation. The lab user had broad `AdministratorAccess` during this exercise; that was a human operator permission choice, not an instance role. For a production or portfolio reproduction, prefer a role or IAM Identity Center permission set scoped to the deployment, and avoid account-wide administrator access where practical.
 
-For completeness, the journal's one-time IAM-user bootstrap used these commands while signed in as an already-authorized AWS administrator. They are **historical lab setup commands**, not commands to run for every deployment; a managed workforce role or IAM Identity Center is preferable where available:
+Before deployment, I created a dedicated IAM lab user while signed in as an already-authorized AWS administrator. These are the one-time commands I used; they are **historical lab setup commands**, not commands to run for every deployment. A managed workforce role or IAM Identity Center is preferable where available:
 
 ```bash
 aws iam create-user --user-name mds-devsecops-lab
@@ -117,9 +123,9 @@ aws iam list-mfa-devices --user-name mds-devsecops-lab \
   --query 'length(MFADevices)' --output text
 ```
 
-The recorded result was `1`. `SignInLocalDevelopmentAccess` enables browser-based CLI sign-in; it does not itself grant EC2 or S3 permissions. `AdministratorAccess` granted the human lab operator those broad permissions in this particular exercise. Neither policy belongs on an EC2 instance profile. The journal's MFA QR image, password, and TOTP values are intentionally not reproduced.
+I got `1`, confirming one MFA device was attached. `SignInLocalDevelopmentAccess` let me sign in through the browser; it did not grant EC2 or S3 permissions by itself. `AdministratorAccess` gave my human lab account broad permissions in this exercise. I did not attach it to either EC2 role. I have not reproduced my MFA QR image, password, seed, or one-time codes.
 
-### 3.2 Inspect the Terraform project and plan
+### I checked the Terraform plan before deployment
 
 The repository contains the Terraform resources, provider lock file, example variables, and outputs. Copy the example variable file locally and fill only values needed for your own deployment. Do not commit real `terraform.tfvars`, state files, credentials, private keys, or account-specific output.
 
@@ -134,9 +140,9 @@ terraform validate
 terraform plan
 ```
 
-Read the full plan before applying. Confirm the region, network ranges, instance types, IAM policy scope, encrypted volumes, absence of public IPs, and absence of ingress rules. The journal records explicit EBS encryption because the account's regional encryption-by-default setting was disabled. The Ubuntu 24.04 AMI was looked up through Canonical's public SSM parameter and its owner, architecture, state, and image name were checked before use. The checked image was Canonical-owned (`099720109477`), `x86_64`, and Ubuntu Noble.
+Before I applied the plan, I checked the Region, network ranges, instance types, IAM policy scope, volume encryption, public IP settings, and security-group ingress. I wanted to catch an exposed instance or unintended permission before Terraform created anything. I found that regional EBS encryption-by-default was disabled, so I explicitly set encryption on the volumes in Terraform. I looked up the Ubuntu 24.04 AMI through Canonical's public SSM parameter, then checked its publisher, architecture, state, and image name. The image was Canonical-owned (`099720109477`), available, and `x86_64` Ubuntu Noble.
 
-The journal also kept the read-only AWS preflight queries that informed those Terraform choices. These are useful before writing or applying the configuration, because CIDR overlap, unavailable instance types, an incorrect image publisher, or an assumed EBS encryption default can invalidate a plan:
+I also saved the read-only AWS preflight queries that informed my Terraform choices. These are useful before writing or applying the configuration, because CIDR overlap, unavailable instance types, an incorrect image publisher, or an assumed EBS encryption default can invalidate a plan:
 
 ```bash
 # Check existing VPC ranges to avoid overlap with the proposed lab VPC.
@@ -170,9 +176,9 @@ aws ec2 get-ebs-default-kms-key-id \
   --profile "$AWS_PROFILE" --region us-east-1
 ```
 
-The recorded existing default VPC used `172.31.0.0/16`; the lab selected non-overlapping `10.20.0.0/16`. Six AZs were listed and `us-east-1a` was selected for the single-AZ lab. All candidate T2/T3 sizes checked were offered there. Canonical's AMI owner ID was `099720109477`; the image was available and `x86_64`. The regional EBS encryption-by-default result was `false`, and the AWS-managed EBS key alias was `alias/aws/ebs`. Those account-level values were inspected but not changed; Terraform explicitly requested encryption for project volumes.
+My existing default VPC used `172.31.0.0/16`, so I chose the non-overlapping `10.20.0.0/16` range. I checked six AZs and selected `us-east-1a` for this single-AZ lab; the candidate T2/T3 sizes were available there. I also verified that Canonical owned the available `x86_64` Ubuntu image (`099720109477`). EBS encryption-by-default was `false`, and the default key was `alias/aws/ebs`. I left those account-wide settings alone and explicitly enabled encryption on the volumes Terraform created.
 
-Cost was also part of the design decision. The journal's October 2026 estimate put one continuously running NAT Gateway at about `$32.85/month`, before data processing, and the two EC2 instances at about `$22.85/month`, before storage and networking extras. That baseline could exceed the learner's `$50` monthly budget notification. Prices change, and a budget alert only notifies; it does not cap spend. The practical control was to run the lab only when needed and destroy it afterward.
+Cost was also part of the design decision. When I planned the lab in October 2026, my estimate was about `$32.85/month` for a continuously running NAT Gateway and `$22.85/month` for both instances, before data processing, storage, and other network charges. That could exceed my `$50` monthly budget alert. Prices change, and the alert only notifies me; it does not cap spend. I kept the cost down by running the lab only when I needed it and destroying it afterward.
 
 ```bash
 terraform apply
@@ -182,7 +188,7 @@ cd ..
 
 Terraform outputs provide the admin and target instance IDs and transfer bucket name. Keep those values in the shell or an untracked local file; do not paste live identifiers into public documentation. Wait until both nodes are registered as SSM managed instances before proceeding. If a node does not appear, check its instance profile, SSM Agent status, route to the required SSM endpoints, and NAT or VPC endpoint path instead of opening inbound SSH as a shortcut.
 
-### 3.3 Open the admin Session Manager session
+### I connected to the admin node with Session Manager
 
 From the workstation, start a session to the admin node:
 
@@ -196,7 +202,7 @@ An SSM session is initiated through AWS APIs and the SSM Agent's outbound channe
 
 The controller uses `amazon.aws.aws_ssm`. Its module transfers use the configured private S3 bucket, so the admin role needs bucket-scoped transfer permissions and the target must be able to reach S3 using the configured path. The target agent role has only the five selected SSM channel actions; the admin controller's session and bucket permissions are separate. Do not replace these roles with `AdministratorAccess` to make a connection problem disappear.
 
-The journal records why the instance policy was narrowed instead of attaching the broader `AmazonSSMManagedInstanceCore` policy. That managed policy included parameter, patching, inventory, and compliance actions the lab did not require. The selected instance-agent policy had five Session Manager actions:
+I reviewed `AmazonSSMManagedInstanceCore` before choosing a narrower instance policy. It included parameter, patching, inventory, and compliance actions this lab did not need, so I used a five-action Session Manager policy for the instance agent:
 
 ```json
 {
@@ -215,9 +221,9 @@ The journal records why the instance policy was narrowed instead of attaching th
 }
 ```
 
-This is the **instance agent** permission set, not the human operator policy and not the Ansible controller policy. The controller additionally needs permission to start and terminate the target session and access only the transfer bucket. Its recorded S3 actions were `s3:GetObject`, `s3:PutObject`, `s3:ListBucket`, `s3:DeleteObject`, and `s3:GetBucketLocation`, scoped to the lab bucket and its objects. Do not attach the human IAM user's administrator policy to either EC2 role.
+I kept this **instance-agent** policy separate from both my human AWS permissions and the Ansible controller policy. The controller also needed permission to start and end a target session, plus access to the transfer bucket. I scoped its S3 actions (`GetObject`, `PutObject`, `ListBucket`, `DeleteObject`, and `GetBucketLocation`) to the lab bucket and its objects. I did not attach my human administrator policy to either EC2 role.
 
-### 3.4 Configure inventory and the SFTP public key
+### I prepared Ansible and the SFTP key
 
 The EC2 nodes did not need Git or GitHub authentication. For a reproduction from this repository, stage the reviewed Ansible files in the private transfer bucket, then retrieve them on the admin node. Run the first block from the workstation at the repository root, and the second inside the admin SSM session:
 
@@ -241,7 +247,7 @@ On the admin node, copy `ansible/inventory/hosts.example.yml` to an untracked `a
 
 The dedicated Ed25519 SFTP key pair was generated on the operator workstation. Its private key remained there; only the public key was uploaded as `sftpdata/sftpdata.pub` to the private transfer bucket. The admin node retrieved that public key to `/tmp/sftpdata.pub` using its instance role and supplied it to Ansible. Do not place the private key in S3, on the target, in Terraform state, or in the repository.
 
-This command sequence reproduces the key-staging flow. Run the first two commands on the workstation and the final download on the admin node. Replace `YOUR_TRANSFER_BUCKET` with the Terraform output in your active shell; the private key is never uploaded.
+I wrote down this key-staging sequence so I could repeat it. I ran the first two commands on my workstation and the download on the admin node, replacing `YOUR_TRANSFER_BUCKET` with Terraform's output. I uploaded only the public key; the private key stayed on my workstation.
 
 ```bash
 # Workstation: create the dedicated key pair with a private local key file.
@@ -261,13 +267,13 @@ aws s3 cp "s3://YOUR_TRANSFER_BUCKET/sftpdata/sftpdata.pub" \
 chmod 0644 /tmp/sftpdata.pub
 ```
 
-`ssh-keygen` prompts for a passphrase; do not record or share it. The journal recorded the target account as UID/GID 1002, but a reusable playbook should use `sftpdata` and `sftp-only` names instead of hard-coding those numbers.
+`ssh-keygen` prompts for a passphrase; I never record or share it. In my run, the target account had UID/GID 1002. In a reusable playbook, I prefer referring to `sftpdata` and `sftp-only` by name instead of hard-coding those numbers.
 
-The initial SSM transfer path required troubleshooting: the Ansible plugin uses temporary S3 transfers, so a working SSM session by itself does not prove Ansible can stage its module. Verify plugin and collection installation, bucket name and permissions, target reachability to S3, and controller role before changing network exposure. The final Ansible run recorded in the journal completed with `ok=17`, `changed=3`, `unreachable=0`, and `failed=0`.
+I had to troubleshoot the Ansible-over-SSM path because a working SSM shell did not guarantee that Ansible could stage its temporary files through S3. I checked the plugin and collection, bucket name and permissions, target access to S3, and the controller role before considering any network change. My original run finished with `ok=17`, `changed=3`, `unreachable=0`, and `failed=0`.
 
-## 4. Inspect the target before changing it
+## 3. I inspected the target before making changes
 
-Start a second SSM session directly to the target for baseline inspection and final verification:
+I opened a second SSM session directly to the target so I could inspect it before hardening and return to it for final checks:
 
 ```bash
 aws ssm start-session \
@@ -275,7 +281,7 @@ aws ssm start-session \
   --profile "$AWS_PROFILE" --region us-east-1
 ```
 
-Commands in this section run **inside the target's SSM shell**, unless otherwise marked. Record the hostname, OS release, kernel, package state, services, listeners, and current control state. These checks prevent applying target-hardening assumptions to the workstation or admin node.
+Unless I say otherwise, I ran the commands in this section **inside the target's SSM shell**. I captured the hostname, OS release, kernel, package state, services, listeners, and current control state first. That way, I knew I was looking at the target rather than confusing it with my WSL workstation or the admin node.
 
 ```bash
 hostname
@@ -285,9 +291,9 @@ systemctl list-units --type=service --state=running --no-pager
 ss -lntup
 ```
 
-The recorded target was `ip-10-20-20-177`, Ubuntu 24.04.5 LTS, on an AWS kernel. The listener inventory included SSH on IPv4 and IPv6 wildcard addresses, local DNS resolver sockets, and chrony. This was not equivalent to public reachability: the security groups had no inbound rules and the instance had no public IP. SFTP would be tested through SSM port forwarding.
+My target was Ubuntu 24.04.5 LTS on an AWS kernel. I found SSH listening on IPv4 and IPv6 wildcard addresses, along with local DNS resolver sockets and chrony. That did not make SSH publicly reachable: the instance had no public IP and its security group had no inbound rules. I planned to test SFTP through SSM port forwarding.
 
-The journal also recorded the state of the relevant security controls before and after work. UFW was initially inactive; the kernel firewall policy showed default ACCEPT chains. AppArmor was enabled and active, with 122 profiles loaded and 26 in enforce mode. The unattended-upgrades service was active and enabled after correcting a malformed combined command that had obscured its output. These checks illustrate why commands should be run separately and why a command's pasted output must be attributed to the correct host.
+Before I hardened the host, UFW was inactive and the firewall chains showed default ACCEPT policies. AppArmor was already enabled and active, with 122 profiles loaded and 26 enforcing. I also confirmed unattended-upgrades was active and enabled after I reran a malformed combined command correctly. Separating the commands helped me avoid misattributing output to the wrong host.
 
 To inspect patch state and reboot requirements:
 
@@ -300,11 +306,11 @@ else
 fi
 ```
 
-Four Ubuntu packages were reported as upgradable but deferred due to phased rollout: `cloud-init`, `tmux`, `ubuntu-pro-client`, and `ubuntu-pro-client-l10n`. The lab did not force phased updates. At the recorded check, no reboot was required. An enabled `unattended-upgrades` service does not mean every available update installs immediately; review its allowed origins and logs when investigating update behavior.
+When I checked updates, four packages were available but deferred by Ubuntu's phased rollout: `cloud-init`, `tmux`, `ubuntu-pro-client`, and `ubuntu-pro-client-l10n`. I left the rollout intact rather than forcing them. No reboot was required at that check. I also learned that an enabled unattended-upgrades service does not mean every package installs immediately, so I checked its log and allowed origins.
 
-### 4.1 Prepare the separate target data volume
+### I prepared the target's separate data volume
 
-This step must be completed before the reconstructed playbook runs, because its first task asserts that `/srv/sftp-data` is already a mount point. The journal confirms the resulting device was ext4 and was persistently mounted by UUID with `defaults,nofail`; it did not preserve the exact original format/mount command transcript. The following is a safe reproduction for a **new, empty lab volume only**.
+I prepared this disk before running the reconstructed playbook: its first task checks that `/srv/sftp-data` is already mounted and stops if it is not. I recorded that the disk ended up formatted as ext4 and mounted persistently by UUID with `defaults,nofail`, but I did not preserve the exact original format-and-mount command transcript. The commands below show how I would safely repeat that one-time step on a **new, empty lab volume only**.
 
 First identify the attached 5-GiB volume and confirm it is not mounted and has no filesystem/data that needs to be preserved:
 
@@ -313,7 +319,7 @@ lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS
 sudo blkid
 ```
 
-The recorded device name was `/dev/nvme1n1`; device numbering can differ, so verify rather than copy that name blindly. Only after confirming the correct disk is blank, create the filesystem and mount point:
+My device appeared as `/dev/nvme1n1`; numbering can differ, so I verify the disk rather than copying that name blindly. Only after confirming the intended volume is blank would I create the filesystem and mount point:
 
 ```bash
 sudo mkfs.ext4 /dev/nvme1n1
@@ -341,11 +347,11 @@ findmnt --mountpoint /srv/sftp-data
 df -hT /srv/sftp-data
 ```
 
-Expected: filesystem type `ext4`, mount point `/srv/sftp-data`, and the source matching the new volume's UUID. Do not rerun `mkfs` on an existing filesystem. The committed playbook does **not** format a disk, write `/etc/fstab`, or mount it; it checks the mount and stops if it is missing. Keeping destructive disk initialization separate from routine hardening prevents a playbook rerun from erasing data.
+I expected filesystem type `ext4`, mount point `/srv/sftp-data`, and the new volume's UUID as the source. I would never rerun `mkfs` on an existing filesystem. The playbook I reconstructed does **not** format a disk, write `/etc/fstab`, or mount it; it checks the mount and stops if I have not prepared it. Keeping disk initialization separate from routine hardening means an Ansible rerun cannot erase the data volume.
 
-## 5. Apply the target's host hardening
+## 4. I hardened the target with Ansible
 
-The committed playbook is `ansible/playbooks/harden-target.yml`. It represents the final intended host settings and organizes them into repeatable tasks. Because it was reconstructed after the original temporary file was lost, use it as a reviewed reproduction starting point and inspect its variables and handlers before deployment.
+After I realized the temporary playbook from the live run was gone, I reconstructed `ansible/playbooks/harden-target.yml` from the final state I had verified. It gives me a repeatable starting point, but it is not the original file. I review its variables and handlers before applying it to a new target.
 
 On the admin node, install the declared collections and run the syntax check, then apply against the target inventory:
 
@@ -357,7 +363,7 @@ ansible-playbook -i ansible/inventory/hosts.yml \
   ansible/playbooks/harden-target.yml
 ```
 
-The hardening included these outcomes:
+I wanted the target to have the following controls in place:
 
 1. **Separate SFTP identity:** user `sftpdata`, group `sftp-only`, UID/GID 1002 in the recorded run, locked password, and `/usr/sbin/nologin` shell.
 2. **Chrooted OpenSSH:** the `sftpdata` match block uses the internal SFTP subsystem, disables forwarding and interactive shell capability, and confines the account to `/srv/sftp-data`.
@@ -366,9 +372,9 @@ The hardening included these outcomes:
 5. **Key-only access:** `/home/sftpdata/.ssh` was mode `0700`; `authorized_keys` was owned by the transfer identity and mode `0600`. Password login was disabled for this SFTP identity.
 6. **Firewall and host controls:** UFW was configured with deny incoming, allow outgoing, IPv6 enabled, and low logging. AppArmor and unattended-upgrades service state was checked. Auditd policy and rules, plus persistent kernel/network sysctls, were installed.
 
-### 5.1 Understand the SSH policy that enforces SFTP-only access
+### I restricted SSH to SFTP for the transfer account
 
-The reconstructed playbook installs a dedicated drop-in file at `/etc/ssh/sshd_config.d/00-project-hardening.conf`. Its intended policy is shown below. This excerpt documents the repository's reconstructed configuration, not a preserved copy of the temporary file from the original run:
+After I lost the temporary playbook from the original run, I reconstructed a drop-in for `/etc/ssh/sshd_config.d/00-project-hardening.conf`. The policy below is what I included in the repository; it is not a preserved copy of the exact file from the first run:
 
 ```text
 PermitRootLogin no
@@ -390,7 +396,7 @@ The global directives disable root login and password-based authentication while
 
 OpenSSH checks ownership and permissions on every component of `ChrootDirectory`. It must be owned by root and cannot be writable by group or other users. That is why the chroot itself is root-owned and the user can write only to a child directory. Making the chroot root writable would violate OpenSSH's safety requirement and undermine the confinement boundary. The SFTP account has a locked password and `nologin` shell as additional controls; the forced internal SFTP command is what constrains the SSH session to the file-transfer subsystem.
 
-Before installing an SSH change, validate the candidate file and then validate the effective configuration. The playbook's copy task uses `sshd -t` as its validation command, so an invalid file is rejected before replacement. A safe manual review sequence is:
+Before installing an SSH change, I validate the candidate file and then check the effective settings for the SFTP user. The reconstructed playbook uses `sshd -t` to reject invalid syntax before replacing the file. I use this sequence for a manual review:
 
 ```bash
 sudo sshd -t
@@ -400,11 +406,11 @@ sudo sshd -T -C user=sftpdata,host=localhost,addr=127.0.0.1 \
 
 `sshd -t` checks syntax. `sshd -T -C` evaluates the effective settings for a connection context, including `Match` rules; it is stronger evidence than reading a file in isolation. During the lab, the first effective-config query was blocked because `/run/sshd` was missing. Creating that runtime directory allowed the check to proceed. If the command fails on another system, inspect its exact error and service/runtime state before changing authentication policy.
 
-The data device was confirmed before formatting. Formatting an unverified block device is destructive; on a reproduction, identify the attached volume and confirm it is the intended empty lab disk before issuing any filesystem command. The playbook should be reviewed for idempotence and for SSH configuration validation (`sshd -t`) before installation. Do not add an inbound UFW or security-group allow rule for TCP 22; SSM provides the management and test tunnel.
+Before formatting, I identified the attached data disk; formatting an unverified device could erase the wrong data. When I repeat the lab, I check the size, filesystem, and mount state first. I also review the playbook for idempotence and SSH syntax validation (`sshd -t`). I do not add inbound UFW or security-group access to TCP 22 because SSM is my management and test path.
 
-### 5.2 Inspect the filesystem, identity, and effective SSH result
+### I checked the mount, account, permissions, and effective SSH policy
 
-After Ansible completes, use these read-only checks in the target's SSM shell. They connect the intended policy to the actual filesystem and account state:
+After Ansible completed, I ran these read-only checks in the target's SSM shell to make sure the filesystem and account matched the policy I intended:
 
 ```bash
 lsblk -f
@@ -419,7 +425,7 @@ stat -c '%U:%G %a %n' \
   /home/sftpdata/.ssh/authorized_keys
 ```
 
-`lsblk -f` identifies block devices, filesystem type, and UUID; `findmnt` confirms the dedicated filesystem is mounted at the expected chroot path. The expected account has the restricted group, `nologin` shell, and no administrative group membership. `namei -l` walks every parent directory and exposes an unsafe owner or mode in the path, while `stat` checks the final objects. The recorded directory policy was chroot root `root:root 755`, upload directory `sftpdata:sftp-only 750`, `.ssh` `sftpdata:sftp-only 700`, and `authorized_keys` `sftpdata:sftp-only 600`.
+`lsblk -f` identifies block devices, filesystem type, and UUID; `findmnt` confirms the dedicated filesystem is mounted at the expected chroot path. The expected account has the restricted group, `nologin` shell, and no administrative group membership. `namei -l` walks every parent directory and exposes an unsafe owner or mode in the path, while `stat` checks the final objects. I verified the chroot as `root:root 755`, the upload directory as `sftpdata:sftp-only 750`, `.ssh` as `sftpdata:sftp-only 700`, and `authorized_keys` as `sftpdata:sftp-only 600`.
 
 The effective SSH settings should be tested for the restricted account, not inferred from the global file alone:
 
@@ -430,11 +436,11 @@ sudo sshd -T -C user=sftpdata,host=localhost,addr=127.0.0.1 \
   | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication|forcecommand|chrootdirectory|allowtcpforwarding|permittty)'
 ```
 
-The `install -d` line recreates the runtime directory that was missing during the recorded manual check; it does not change the persistent SSH policy. On a system where the service manager already created `/run/sshd`, it should already exist. `sshd -T -C` should show the effective chroot and forced internal-SFTP command for this user, with forwarding and TTY disabled. If output differs, inspect drop-ins and `Match` ordering before testing with the account.
+I added the `install -d` check because `/run/sshd` was missing during my first manual `sshd -T` check. Creating it restored the runtime directory; it did not change the persistent SSH policy. On a system where the service manager has already created it, this step is unnecessary. I used `sshd -T -C` to inspect the effective `Match` policy for `sftpdata`, rather than relying only on the text of the drop-in.
 
-## 6. Validate SFTP's allowed and denied behavior
+## 5. I tested what the SFTP account could and could not do
 
-### 6.1 Start the SSM port-forwarding tunnel
+### I opened the SSM port-forwarding tunnel
 
 From the workstation, open a port-forwarding session to the target's local SSH service. Leave this terminal open while testing from another terminal.
 
@@ -448,7 +454,7 @@ aws ssm start-session \
 
 This maps workstation `127.0.0.1:2222` through SSM to target port 22. It does not create an inbound network rule. The tunneled SSH/SFTP payload is encrypted; SSM session start/stop records do not expose tunneled filenames or file contents.
 
-### 6.2 Check the server host key and authenticate with SFTP
+### I verified the server identity and transferred a test file
 
 In another workstation terminal, connect with the dedicated private key:
 
@@ -457,7 +463,7 @@ sftp -P 2222 -i ~/.ssh/mds-linux-hardening-1b-sftpdata \
   -o IdentitiesOnly=yes sftpdata@127.0.0.1
 ```
 
-The SSH host key shown through the local tunnel should be verified against the target's public host-key fingerprint, obtained through the trusted SSM administration channel. The journal compared the ED25519 fingerprint in the workstation's `[127.0.0.1]:2222` known-host entry with the target's `/etc/ssh/ssh_host_ed25519_key.pub`; they matched. This checks that the tunnel terminates at the expected target instead of silently trusting an unknown host key.
+The SSH host key shown through the local tunnel should be verified against the target's public host-key fingerprint, obtained through the trusted SSM administration channel. I compared the ED25519 fingerprint in my workstation's `[127.0.0.1]:2222` known-host entry with the target's `/etc/ssh/ssh_host_ed25519_key.pub`; they matched. This checks that the tunnel terminates at the expected target instead of silently trusting an unknown host key.
 
 The comparison commands used were:
 
@@ -471,7 +477,7 @@ sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
 
 Compare the `SHA256:` fingerprint strings. The host key is distinct from the SFTP user's client key: the client private key proves the user's identity to the server; the server host key lets the client verify which server it reached.
 
-The recorded session opened at `/upload`. The test created a harmless local file, uploaded it to `/upload`, downloaded it to a different local path, and compared SHA-256 digests. From the SFTP prompt, `!` runs a local workstation command (it does not run a command on the target):
+My SFTP session opened at `/upload`. The test created a harmless local file, uploaded it to `/upload`, downloaded it to a different local path, and compared SHA-256 digests. From the SFTP prompt, `!` runs a local workstation command (it does not run a command on the target):
 
 ```text
 sftp> !printf 'SFTP hardening lab transfer test\n' > /tmp/mds-sftp-test.txt
@@ -517,9 +523,9 @@ The expected response is `This service allows sftp connections only.` This is a 
 
 The early test used `/upload` as the SFTP-visible path even though its target-side directory was `/srv/sftp-data/upload`. Chroot path translation is intentional: inside the restricted session, `/` corresponds to `/srv/sftp-data`, while `/upload` maps to the writable child directory.
 
-### 6.3 Troubleshoot connection failures without weakening the boundary
+### What I learned while troubleshooting
 
-The journal records several issues that are useful to recognize:
+I ran into a few issues that are worth remembering:
 
 - `ssh -T` returning “This service allows sftp connections only” was the expected denied-shell result, not a failed SFTP configuration.
 - Uploading to `/` returned `Permission denied` by design. Use `/upload` for transfers; do not loosen chroot-root ownership to make the root writable.
@@ -528,11 +534,11 @@ The journal records several issues that are useful to recognize:
 - `sshd -T` initially could not run because `/run/sshd` did not exist. The runtime directory was created, after which the effective configuration could be checked. This is an ephemeral runtime prerequisite, not a reason to edit SSH policy blindly.
 - Some transcript output was accidentally concatenated (for example, `systemctl` checks, UFW status, and command text without separators). Re-run one command at a time and confirm the hostname before recording conclusions.
 
-## 7. Verify operating-system controls
+## 6. I checked the host's security controls
 
 Run these checks in the **target's SSM shell**, not the workstation or admin node. Capture sanitized output and avoid publishing account IDs, internal addresses, access keys, or private key material.
 
-### 7.1 Network firewall and listening services
+### I checked the firewall and network listeners
 
 ```bash
 sudo ufw status verbose
@@ -542,13 +548,13 @@ sudo iptables -S
 sudo ip6tables -S
 ```
 
-The final UFW state was active, logging low, default deny incoming, allow outgoing, and disabled routed traffic. IPv6 support was enabled in UFW configuration. No explicit inbound SSH allow rule was added. The systemd socket/listener inventory still showed local SSH on port 22, but the EC2 security groups had no inbound rules. A process listening on an interface and a port reachable from the Internet are different facts; check both host and cloud network controls.
+After I enabled UFW, I confirmed it was active with low logging, default deny incoming, allow outgoing, and routed traffic disabled. IPv6 support was enabled in UFW configuration. No explicit inbound SSH allow rule was added. The systemd socket/listener inventory still showed local SSH on port 22, but the EC2 security groups had no inbound rules. A process listening on an interface and a port reachable from the Internet are different facts; check both host and cloud network controls.
 
-The firewall change intentionally did not add an SSH exception. That preserved a simple rule: unsolicited inbound traffic is denied by the host, while the lab's management and SFTP test use SSM. Outbound traffic remained allowed so the instance could use its expected update and management paths. UFW's “active” status confirms it is enforcing its configured policy; it does not prove that every cloud route or security group is correct. Conversely, the earlier `iptables -S` output showing ACCEPT base policies was collected before UFW was enabled and must not be used as the final firewall result. The final evidence used UFW status and successful SSM/SFTP tests together.
+I deliberately did not add an SSH exception. My rule was simple: deny unsolicited inbound traffic at the host, and use SSM for administration and the SFTP test. I left outbound traffic allowed for expected updates and management. Seeing UFW report `active` confirmed that its policy was enabled, but I still checked the cloud security group separately. The earlier `iptables -S` output with ACCEPT policies was from before UFW was enabled, so I did not treat it as the final firewall result. I relied on both the final UFW status and successful SSM/SFTP tests.
 
-The first `ufw status numbered` attempt returned usage text because the command had accidentally been concatenated with `IPV6=yes`. Re-running it alone produced the status output. The earlier `ufw: command not found` result belonged to the WSL host, where UFW was not installed; it was not evidence about the AWS target. This is why host identity and clean command boundaries matter in a multi-node lab.
+My first `ufw status numbered` attempt returned usage text because I had accidentally joined it to `IPV6=yes`. I ran it separately and got the status output. The earlier `ufw: command not found` result belonged to the WSL host, where UFW was not installed; it was not evidence about the AWS target. This is why host identity and clean command boundaries matter in a multi-node lab.
 
-These are the standalone commands used to establish the recorded UFW policy on the target. The Ansible playbook expresses the same intent declaratively:
+I also kept the manual commands I used to set the firewall policy on the target. In the reconstructed playbook, I express the same intent declaratively:
 
 ```bash
 sudo sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
@@ -560,7 +566,7 @@ sudo ufw status verbose
 
 `--force` avoids an interactive confirmation, which is useful for automation; use it only after verifying a recovery path. SSM was already working and did not depend on inbound SSH. The sequence intentionally does not add `ufw allow 22/tcp`. If a future deployment manages the host only over SSH, enabling deny-incoming without a verified alternate management path can lock out the operator. The recorded project enabled UFW and then confirmed that new SSM and tunneled SFTP sessions still worked.
 
-### 7.2 AppArmor and unattended upgrades
+### I checked AppArmor and unattended upgrades
 
 ```bash
 sudo aa-status
@@ -571,11 +577,11 @@ systemctl is-active unattended-upgrades
 sudo tail -n 30 /var/log/unattended-upgrades/unattended-upgrades.log
 ```
 
-The target reported AppArmor enabled and active. At the recorded status check, 122 profiles were loaded, with 26 enforcing; `chronyd` and `rsyslogd` were among the enforced processes. The SSM Agent profile was in complain mode in the recorded output. This status command reports policy state; it does not prove that every workload has a tailored enforcing profile.
+I confirmed AppArmor was enabled and active. It had 122 profiles loaded, with 26 enforcing; `chronyd` and `rsyslogd` were among them. The SSM Agent profile was in complain mode. I treated `aa-status` as evidence of the profile states it listed, not proof that every workload had a tailored enforcing profile.
 
-The unattended-upgrades unit was enabled and active. Its log listed allowed Ubuntu Noble updates and security origins and reported that no unattended packages were ready at that particular check. A separate package listing showed four updates deferred due to phased rollout; the lab left phasing intact rather than forcing those packages.
+I confirmed unattended-upgrades was enabled and active. Its log listed the allowed Ubuntu Noble update and security origins, but no packages were ready to install at that check. My package list separately showed four phased updates, and I left Ubuntu's rollout behavior alone.
 
-### 7.3 Auditd installation, rules, and event test
+### I installed and tested auditd
 
 Auditd was not installed at the initial package check. Installing `auditd` and `audispd-plugins` created the service unit. The first `systemctl enable --now auditd` attempt failed because the package installation had not completed yet. After installation completed, the command succeeded and both `systemctl is-enabled auditd` and `systemctl is-active auditd` returned `enabled` and `active`.
 
@@ -589,7 +595,7 @@ systemctl is-enabled auditd
 systemctl is-active auditd
 ```
 
-Do not run the service-enable command until package installation has finished and the unit file exists. In the recorded sequence, the installation completed successfully, created the unit, and then enabling/starting it succeeded.
+I learned to wait for package installation to finish before enabling the service. My first attempt came too early, before `auditd.service` existed. Once the packages had installed and created the unit, enabling and starting auditd succeeded.
 
 Check the audit daemon and loaded rules:
 
@@ -599,7 +605,7 @@ sudo augenrules --check
 sudo auditctl -l
 ```
 
-The active rules watched identity, privilege, SSH, and firewall configuration paths for writes and attribute changes:
+I loaded watches for changes to account files, privilege configuration, SSH configuration, and UFW:
 
 ```text
 -w /etc/passwd -p wa -k identity
@@ -648,9 +654,9 @@ sudo ausearch -k firewall -ts today -i
 
 `-i` asks `ausearch` to interpret numeric fields into human-readable values; preserve the raw event when exact syscall data matters. Review the event's `SYSCALL`, `PATH`, `PROCTITLE`, `auid`, `uid`, `exe`, and `key` fields together. In this lab's SSM-root context, `auid=unset` meant the event did not tie itself to the human IAM caller. Correlate it with AWS SSM session/API records if attribution is required; do not claim auditd alone identified that person.
 
-The journal recorded audit status `enabled 1`, `failure 1`, backlog limit 8192, and zero lost events at the status checks. `augenrules --check` reported `No change`, meaning the generated rules matched the source rules at that point. The configured log policy used asynchronous incremental flush, rotation at 8 MiB, five logs, and suspend actions for admin-space, disk-full, and disk-error conditions.
+My later `auditctl -s` check showed `enabled 1`, `failure 1`, backlog limit 8192, and zero lost events. `augenrules --check` returned `No change`, so the generated rules matched the source rules at that point. I also set the log policy to flush incrementally, rotate at 8 MiB with five logs, and suspend on admin-space, disk-full, and disk-error conditions.
 
-The audit daemon policy values recorded in `/etc/audit/auditd.conf` were:
+I set the following audit daemon policy values in `/etc/audit/auditd.conf`:
 
 ```text
 flush = INCREMENTAL_ASYNC
@@ -668,7 +674,7 @@ disk_error_action = SUSPEND
 
 These settings flush audit data incrementally, rotate at the configured file size, and define behavior when disk space becomes scarce or errors occur. On a manual reproduction, edit the existing keys with `sudoedit /etc/audit/auditd.conf` rather than blindly appending duplicate key lines. The reconstructed playbook uses `lineinfile` to update those settings. The active values and service health should be checked after the configuration handler runs.
 
-To demonstrate that a watch rule emitted an event, the lab created and removed a harmless temporary file under `/etc/ufw`, then searched for key `firewall`:
+To test a watch rule, I created and removed a harmless temporary file under `/etc/ufw`, then searched for the `firewall` key:
 
 ```bash
 sudo touch /etc/ufw/.audit-lab-test
@@ -676,11 +682,11 @@ sudo rm /etc/ufw/.audit-lab-test
 sudo ausearch -k firewall -ts recent -i
 ```
 
-Audit records contained the `touch` creation and `rm` deletion events. The recorded SSM root shell events showed `auid=unset`; therefore these records demonstrate that the filesystem events were collected but do not identify the human IAM user who initiated the SSM shell. Auditd watch coverage is also not a substitute for centralized log forwarding or a complete production audit policy.
+I found both the `touch` creation and `rm` deletion in the audit records. Because I ran the SSM shell as root, the events showed `auid=unset`; auditd proved the filesystem events were collected, but it did not identify which human IAM user opened the SSM session. I would correlate those events with SSM session/API records if attribution were required. These watches also do not replace centralized logging or a complete production audit policy.
 
-### 7.4 Kernel and network sysctls
+### I hardened and verified kernel and network settings
 
-The initial inspection found several good kernel defaults already set, but IPv4 default and interface `send_redirects` and `accept_source_route` were still `1`. The project persisted corrections in `/etc/sysctl.d/99-linux-hardening-network.conf`, then checked the running values. This is a useful before/after example: inspect first, change only the identified weak settings, and verify the effective runtime values afterward.
+When I inspected the kernel settings, several defaults were already strong, but IPv4 default and interface `send_redirects` and `accept_source_route` were still `1`. I recorded those values, wrote the corrections to `/etc/sysctl.d/99-linux-hardening-network.conf`, applied the file, and checked the live values again.
 
 The persistent project file set these values:
 
@@ -693,7 +699,7 @@ net.ipv4.conf.default.accept_source_route = 0
 net.ipv4.conf.ens5.accept_source_route = 0
 ```
 
-This is the shell sequence used to write and apply those persistent network settings. It is safe to repeat as a file replacement, unlike appending with `>>`:
+I wrote and applied those network settings with this shell sequence. It replaces the file each time, so I could repeat it without appending duplicate entries:
 
 ```bash
 sudo tee /etc/sysctl.d/99-linux-hardening-network.conf >/dev/null <<'EOF'
@@ -707,9 +713,9 @@ EOF
 sudo sysctl -p /etc/sysctl.d/99-linux-hardening-network.conf
 ```
 
-The first read showed `net.ipv4.conf.default.send_redirects=1`, `net.ipv4.conf.ens5.send_redirects=1`, and default/interface `accept_source_route=1`. After applying the file, those settings read back as `0`. This before/after check is the evidence of an effective change; a successful `tee` alone would prove only that a file was written.
+The first read showed `net.ipv4.conf.default.send_redirects=1`, `net.ipv4.conf.ens5.send_redirects=1`, and default/interface `accept_source_route=1`. After I applied the file, those settings read back as `0`. Comparing before and after showed the kernel was using the new values; a successful `tee` alone would only show that I wrote a file.
 
-It was applied and verified with:
+I applied the file and checked the live settings with:
 
 ```bash
 sudo sysctl -p /etc/sysctl.d/99-linux-hardening-network.conf
@@ -743,9 +749,9 @@ sudo sysctl net.ipv4.conf.all.send_redirects \
   net.ipv4.conf.ens5.accept_source_route
 ```
 
-The file proves the intended values were written to disk; the `sysctl` query proves the current kernel exposes the expected runtime values. Both checks matter because a correctly edited file may not have been applied, and a runtime `sysctl -w` change may disappear on reboot if no persistent configuration exists.
+The file check showed what would persist across a restart; the `sysctl` query showed what the kernel was using at that moment. I wanted both because a correct file might never have been applied, while a one-time runtime change could disappear after reboot.
 
-Recorded final values included ASLR `2`; dmesg and kernel-pointer restrictions `1`; protected hardlinks and symlinks `1`; IPv4 forwarding `0`; redirect acceptance `0`; redirect sending `0`; source routing `0`; reverse-path filtering `2`; TCP syncookies `1`; and IPv6 redirect/source-route acceptance `0`. The effective values for `all`, `default`, and `ens5` were checked separately because an `all` value alone does not guarantee an interface-specific setting is correct.
+When I verified the final values, I saw ASLR `2`; dmesg and kernel-pointer restrictions `1`; protected hardlinks and symlinks `1`; IPv4 forwarding `0`; redirect acceptance `0`; redirect sending `0`; source routing `0`; reverse-path filtering `2`; TCP syncookies `1`; and IPv6 redirect/source-route acceptance `0`. The effective values for `all`, `default`, and `ens5` were checked separately because an `all` value alone does not guarantee an interface-specific setting is correct.
 
 The controls address different kernel/network risks:
 
@@ -765,7 +771,7 @@ The controls address different kernel/network risks:
 
 These values reduce selected attack surfaces; they do not replace security groups, UFW, patching, or workload-specific network design. `rp_filter=2` was intentionally loose mode, not strict mode. A real deployment should validate settings against its routing design, VPNs, and asymmetric paths before adopting them wholesale.
 
-### 7.5 Logs, updates, and unit health
+### I reviewed logs, pending updates, and failed services
 
 ```bash
 sudo systemctl is-active rsyslog
@@ -774,15 +780,15 @@ sudo journalctl -p warning --since today --no-pager
 systemctl --failed --no-pager
 ```
 
-`rsyslog` was active; the journal occupied 38.3 MiB at the recorded check. The warning query included EC2/virtual-hardware and CPU vulnerability notices as well as a UFW block event. These outputs should be triaged in context rather than treated as a list of confirmed exploitable issues. The final failed-unit check returned `0 loaded units listed`.
+I confirmed `rsyslog` was active and the journal used 38.3 MiB at the time I checked it. My warning query showed EC2/virtual-hardware and CPU notices, along with a UFW block event. I reviewed them in context instead of treating every warning as a confirmed vulnerability. My final failed-unit check returned `0 loaded units listed`.
 
-The warning review included boot-time hardware/virtualization messages, chrony clock correction, IRQ affinity warnings, and a `[UFW BLOCK]` entry. The block entry showed that the host firewall logged a packet it denied; it was not evidence that the packet reached the SFTP process. The MDS and MMIO stale-data kernel notices reported “Clear CPU buffers attempted, no microcode; SMT Host state unknown” in the guest vulnerability files. Record these as platform/runtime observations and interpret them with the cloud provider's shared-responsibility model; the guest's view cannot establish the underlying host's complete mitigation state.
+I saw boot-time hardware/virtualization messages, a chrony clock correction, IRQ-affinity warnings, and a `[UFW BLOCK]` entry. That block showed UFW logged a denied packet; it did not show that the packet reached SFTP. The guest vulnerability files also reported “Clear CPU buffers attempted, no microcode; SMT Host state unknown” for MDS and MMIO stale data. I recorded those as platform observations. A guest-visible report cannot tell me the complete mitigation state of the underlying AWS host.
 
-The target's CPU vulnerability files reported that clearing CPU buffers had been attempted but no microcode was present and SMT host state was unknown. This was recorded as platform-level observation, not as evidence that the Linux hardening controls failed. The target was a `t3.micro` EC2 instance; its guest-visible hardware/kernel report is not equivalent to a direct assessment of the underlying AWS host.
+My target's vulnerability files reported that the kernel had attempted to clear CPU buffers, but no microcode was present and the SMT host state was unknown. I treated this as a platform-level observation, not proof that my Linux hardening failed. The target was a `t3.micro`; its guest view is not a direct assessment of the underlying AWS host.
 
-## 8. Results and evidence
+## 7. What I proved
 
-The demonstrated outcomes were:
+By the end of the lab, I had confirmed that:
 
 - Both EC2 nodes had no public IP or inbound security-group rules; SSM provided administration.
 - Ansible managed the private target over SSM, with temporary transfer files using the scoped S3 path.
@@ -790,13 +796,13 @@ The demonstrated outcomes were:
 - Chroot traversal, writes to the chroot root, and interactive-shell access were denied as intended.
 - UFW was active with default-deny incoming and allow-outgoing policy; no port 22 ingress was opened.
 - AppArmor, unattended-upgrades, auditd, audit watches, and the selected sysctl values were checked on the target.
-- The lab's logs and failed-unit state were reviewed after the changes.
+- I reviewed the logs and checked for failed units after making the changes.
 
-The repository's [verification record](verification.md) and [sanitized hardening evidence](../evidence/hardening-results.md) provide compact evidence tables. Preserve the distinction between actual recorded outcomes and checks that a future user must perform when rebuilding the lab. Do not include private keys, raw Terraform state, personal identifiers, AWS credentials, or unredacted account-specific resource IDs in portfolio evidence.
+I collected the concise results in the [verification record](verification.md) and [sanitized hardening evidence](../evidence/hardening-results.md). When I publish evidence, I keep actual results separate from checks a future rebuild still needs to perform, and leave out private keys, raw Terraform state, personal identifiers, AWS credentials, and account-specific resource IDs.
 
-## 9. Destroy the infrastructure after the demonstration
+## 8. I destroyed the AWS lab when I was done
 
-After testing was complete, the learner used Terraform to tear down the lab. The first destroy attempt was blocked because the private S3 transfer bucket still contained the uploaded SFTP public-key object. Terraform cannot delete a non-empty bucket in this configuration. Remove only the lab's temporary bucket contents, then run destroy again:
+Once I had finished the tests, I used Terraform to tear down the lab. My first destroy attempt stopped because the private S3 transfer bucket still held the uploaded SFTP public key. Terraform could not delete a non-empty bucket, so I emptied the lab bucket and ran destroy again:
 
 ```bash
 aws s3 rm "s3://$(terraform -chdir=terraform output -raw ansible_transfer_bucket)" \
@@ -805,13 +811,13 @@ terraform -chdir=terraform destroy
 terraform -chdir=terraform state list
 ```
 
-The completed destroy reported `Destroy complete! Resources: 1 destroyed.` and `terraform state list` returned no resources. The final remaining Terraform-managed object was the S3 bucket after its contents were removed. Independent follow-up checks showed both instance IDs as `terminated`, the NAT Gateway as `deleted`, the VPC endpoint and a volume as not found, and the filtered volume query returned no volumes. A Resource Groups Tagging API query still showed old resource ARNs, which were stale tag results and did not establish that the resources were running. The contemporaneous S3 `list-buckets` check could not connect to the S3 endpoint, so independent S3 API confirmation was unavailable in that verification window.
+Terraform reported `Destroy complete! Resources: 1 destroyed.`, and my state list was empty. The S3 bucket was the final Terraform-managed resource; an earlier destroy had been blocked while it still contained the SFTP public key. After I emptied it, the final destroy completed. I then checked the EC2 services: both instances were `terminated`, the NAT Gateway was `deleted`, and the endpoint and queried volume were not found. A filtered volume query returned no volumes. The tagging API still showed old ARNs, but those stale tag results did not mean the resources were running. My S3 `list-buckets` check could not reach the S3 endpoint at that time, so I could not use it as independent confirmation.
 
-The journal therefore records that `terraform destroy` was used after the demonstration, that Terraform state was empty afterward, and which independent service checks did and did not complete. Destroying the lab is part of the exercise: NAT Gateways and other live resources can continue to incur charges if left running.
+I recorded the destroy result and the independent checks I could complete afterward. Destroying the lab was part of the exercise: a NAT Gateway and other live resources can continue to cost money if I leave them running.
 
-## 10. Reproduction checklist
+## How I would repeat the lab
 
-When repeating the exercise, use this order:
+If I build the lab again, I will follow the same order:
 
 1. Confirm the AWS profile, account, Region, and target OS before changing resources.
 2. Review Terraform, initialize and validate it, then inspect the complete plan.
@@ -823,5 +829,5 @@ When repeating the exercise, use this order:
 8. Verify host controls individually on the target and keep sanitized evidence.
 9. Empty only the lab transfer bucket, run `terraform destroy`, and confirm Terraform state is empty.
 
-This sequence makes the project more than a list of hardening settings: it demonstrates threat-driven design, least privilege across AWS and Linux identities, repeatable configuration, positive and negative testing, evidence collection, and cost-conscious teardown.
+What I took from the project was the value of proving both sides of a security control: the legitimate user could complete the transfer, and the same identity could not cross the boundaries I had set. I also saw how AWS access, Linux permissions, audit evidence, and cost management fit together in a small but realistic exercise.
 
