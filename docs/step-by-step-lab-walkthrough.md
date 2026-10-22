@@ -12,11 +12,41 @@ I wanted a file-transfer service that could accept a file from an authorized use
 
 I kept several security principles in mind as I worked. Infrastructure as Code made the cloud design reviewable and repeatable. Private subnets and Session Manager reduced the need to expose SSH to the internet. Least privilege shaped the SFTP account and its chroot boundary. Audit rules and host logs helped me observe security-relevant activity, while SHA-256 checksums let me verify the transferred file's integrity.
 
-I worked from Ubuntu in WSL with Terraform and the AWS CLI, then used IAM and browser-based AWS sign-in to manage the account. Terraform created the AWS resources; Session Manager provided administrative access to the private EC2 target; Ansible applied the server configuration. On the target, I checked Linux services and used AppArmor, UFW, auditd, and kernel settings as part of the hardening work. Finally, I tested SFTP access and compared file hashes before using Terraform to tear down the lab.
+I worked from Ubuntu in WSL with Terraform and the AWS CLI, using IAM and browser-based AWS sign-in to manage the account. Terraform created two private EC2 instances: an admin node that ran Ansible and a target node that hosted the SFTP service. I connected to the admin node with Session Manager; Ansible then used `amazon.aws.aws_ssm` and a private S3 transfer bucket to configure the target. On that target, I checked Linux services and applied AppArmor, UFW, auditd, and kernel hardening. After testing SFTP and comparing file hashes, I used Terraform to tear down the lab.
 
+### The three-node lab layout
 
+The lab had three working nodes: my WSL workstation, the private admin EC2 instance, and the private target EC2 instance. The arrows show the management and configuration flow:
 
-This walkthrough follows the dependencies from the beginning. I explain each tool before using it, identify the terminal for each command, and give a checkpoint before the next phase. Commands are grouped in the order I used them. Repository file links show the configuration alongside the walkthrough.
+```text
+WSL workstation
+(Terraform + AWS CLI)
+        |
+        | Session Manager
+        v
+Private admin EC2
+(Ansible controller)
+        |
+        | amazon.aws.aws_ssm
+        | temporary module transfer through private S3 bucket
+        v
+Private target EC2
+(Ubuntu 24.04, SFTP-only workload)
+        |
+        +-- encrypted 20 GiB root EBS volume
+        +-- encrypted 5 GiB SFTP data volume
+            mounted at /srv/sftp-data
+
+Both EC2 nodes:
+  - no public IP
+  - no inbound security-group rules
+  - IMDSv2 required
+
+Private subnet egress: NAT Gateway
+S3 transfer traffic: S3 Gateway endpoint
+```
+
+The admin and target instances had no public IPs or inbound security-group rules. Session Manager let me administer them through AWS-managed sessions, while the S3 Gateway endpoint carried the temporary files Ansible needed without routing that S3 traffic through the NAT Gateway. This walkthrough follows the dependencies from the beginning: I explain each tool before using it, identify the terminal for each command, and give a checkpoint before the next phase. Repository file links show the configuration alongside the walkthrough.
 
 | Layer | Sequence |
 | --- | --- |
