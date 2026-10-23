@@ -18,6 +18,8 @@ The solution separated management from workload access:
 
 ## Architecture
 
+[Open the editable draw.io architecture diagram](docs/aws-infrastructure.drawio).
+
 ```text
 Workstation (Terraform + AWS CLI)
         |
