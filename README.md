@@ -18,7 +18,9 @@ The solution separated management from workload access:
 
 ## Architecture
 
-[Open the editable draw.io architecture diagram](docs/aws-infrastructure.drawio).
+![Project 1B AWS infrastructure architecture](docs/project-1b-aws-architecture.png)
+
+[View the editable draw.io diagram](docs/aws-infrastructure.drawio).
 
 ```text
 Workstation (Terraform + AWS CLI)
@@ -119,3 +121,4 @@ terraform state list
 ```
 
 The recorded demonstration was torn down after testing. Re-running the deployment requires a new `terraform apply`.
+

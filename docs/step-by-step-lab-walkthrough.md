@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 22023)
-Total output lines: 1593
-
 # My Project 1B proactive Linux hardening journey
 
 - **Core technologies:** AWS, AWS CLI, Terraform, IAM, Systems Manager Session Manager, Ubuntu, Ansible, OpenSSH/SFTP, AppArmor, UFW, and auditd.
@@ -21,33 +18,9 @@ I worked from Ubuntu in WSL with Terraform and the AWS CLI, using IAM and browse
 
 The lab had three working nodes: my WSL workstation, the private admin EC2 instance, and the private target EC2 instance. The arrows show the management and configuration flow:
 
-```text
-WSL workstation
-(Terraform + AWS CLI)
-        |
-        | Session Manager
-        v
-Private admin EC2
-(Ansible controller)
-        |
-        | amazon.aws.aws_ssm
-        | temporary module transfer through private S3 bucket
-        v
-Private target EC2
-(Ubuntu 24.04, SFTP-only workload)
-        |
-        +-- encrypted 20 GiB root EBS volume
-        +-- encrypted 5 GiB SFTP data volume
-            mounted at /srv/sftp-data
+![Project 1B AWS infrastructure architecture](project-1b-aws-architecture.png)
 
-Both EC2 nodes:
-  - no public IP
-  - no inbound security-group rules
-  - IMDSv2 required
-
-Private subnet egress: NAT Gateway
-S3 transfer traffic: S3 Gateway endpoint
-```
+[Open the editable draw.io architecture diagram](aws-infrastructure.drawio).
 
 The admin and target instances had no public IPs or inbound security-group rules. Session Manager let me administer them through AWS-managed sessions, while the S3 Gateway endpoint carried the temporary files Ansible needed without routing that S3 traffic through the NAT Gateway. This walkthrough follows the dependencies from the beginning: I explain each tool before using it, identify the terminal for each command, and give a checkpoint before the next phase. Repository file links show the configuration alongside the walkthrough.
 
@@ -678,7 +651,178 @@ resource "aws_vpc_endpoint" "s3" {
 }
 ```
 
-Still in WSL, I formatted and…2023 tokens truncated… Having identified the blank data volume, I used Ansible's filesystem module to create ext4:
+Still in WSL, I formatted and validated the configuration, then reviewed the proposed change:
+
+```bash
+terraform fmt network.tf
+```
+
+```bash
+terraform validate
+```
+
+```bash
+terraform plan
+```
+
+The plan showed `0 to add, 1 to change, 0 to destroy`: an in-place endpoint-policy update. I applied it:
+
+```bash
+terraform apply
+```
+
+The endpoint policy controls S3 traffic from the lab's VPC, not from my local WSL network, so retrying the download from WSL timed out. I reopened the admin node's SSM session and downloaded the package there successfully. Before installing executable software, I also downloaded AWS's signature file. GPG (GNU Privacy Guard) is a tool that verifies digital signatures; I used it with AWS's public signing key to check that the package was signed by AWS and had not been altered. I first checked that GPG was available:
+
+```bash
+curl -fL --connect-timeout 10 --max-time 60 -o /tmp/session-manager-plugin.deb.sig https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb.sig
+```
+
+```bash
+gpg --version | head -n 1
+```
+
+GPG reported `2.4.4`. My first signing-key paste failed with a CRC error, and the two key-server attempts found no key. I resolved this by importing the public signing key directly from AWS's documentation:
+
+```bash
+curl -fsSL https://docs.aws.amazon.com/systems-manager/latest/userguide/install-plugin-linux-verify-signature.md | sed -n '/-----BEGIN PGP PUBLIC KEY BLOCK-----/,/-----END PGP PUBLIC KEY BLOCK-----/p' | sed -E 's/^[[:space:]]+//' | gpg --import
+```
+
+Before trusting that key, I compared its full fingerprint with the AWS-published value:
+
+```bash
+gpg --fingerprint 2C4D4AFF6F6757EE
+```
+
+The fingerprint matched `7959 6371 24CE 093A D501 D47A 2C4D 4AFF 6F67 57EE`. I then verified the downloaded package's digital signature:
+
+```bash
+gpg --verify /tmp/session-manager-plugin.deb.sig /tmp/session-manager-plugin.deb
+```
+
+GPG returned `Good signature`. This checked that the package matched the signature made with AWS's signing key, providing authenticity and integrity checks before I installed executable software. I installed the verified package and checked its version:
+
+```bash
+sudo dpkg -i /tmp/session-manager-plugin.deb
+session-manager-plugin --version
+```
+
+The installed version was `1.2.896.0`. Next, I checked whether Ansible could find its SSM connection plugin:
+
+```bash
+ansible-doc -t connection amazon.aws.aws_ssm
+```
+
+That check exposed a collection-version mismatch: the installed `amazon.aws 7.2.0` did not provide that connection plugin. I tried the compatible `community.aws` collection:
+
+```bash
+ansible-galaxy collection install community.aws:==9.3.0
+```
+
+The Galaxy download returned `403`, so I installed the stable-9 collections from their official GitHub repositories:
+
+```bash
+ansible-galaxy collection install 'git+https://github.com/ansible-collections/community.aws.git,stable-9'
+ansible-galaxy collection install 'git+https://github.com/ansible-collections/amazon.aws.git,stable-9'
+```
+
+I checked each collection separately and opened the connection plugin's documentation:
+
+```bash
+ansible-galaxy collection list amazon.aws
+ansible-galaxy collection list community.aws
+ansible-doc -t connection community.aws.aws_ssm
+```
+
+The user-installed versions were `amazon.aws 9.5.2` and `community.aws 9.3.0`. The documentation resolved to `community.aws.aws_ssm`, which is the connection name I used in the inventory.
+
+Finally, I checked the Python AWS libraries and plugin path on the admin node:
+
+```bash
+python3 -c 'import boto3, botocore; print("boto3", boto3.__version__); print("botocore", botocore.__version__)'
+command -v session-manager-plugin
+command -v curl
+```
+
+Both Python libraries reported `1.34.46`, and the Session Manager plugin resolved to `/usr/local/bin/session-manager-plugin`. The final curl-path check printed nothing, although the earlier package download had succeeded. I did not treat that output as proof that the target lacked curl.
+
+The connection also needed curl on the target for S3 transfers. From WSL, I opened the target session:
+
+```bash
+aws ssm start-session --target i-0cce45e09ec35a12a --profile mds-devsecops-lab --region us-east-1
+```
+
+Inside the target session, I checked:
+
+```bash
+command -v curl
+```
+
+It returned `/usr/bin/curl`. With the controller tools and target dependency checked, I returned to the admin node to configure the inventory.
+
+### 2.4 I configured Ansible to reach the private target
+
+With the controller prerequisites checked, I needed an inventory that told Ansible which EC2 instance to manage, which SSM connection to use, and where to stage temporary module files. From my WSL project directory, I first read the transfer bucket name from Terraform's state:
+
+```bash
+terraform state show aws_s3_bucket.ansible_transfer
+```
+
+The bucket was `mds-linux-hardening-1b-273517699789-us-east-1`. I then opened the admin node's SSM session from WSL:
+
+```bash
+aws ssm start-session --target i-0d9cc5ae05f797442 --profile mds-devsecops-lab --region us-east-1
+```
+
+Inside the **admin node's SSM shell**, I created the working directory and wrote the inventory:
+
+```bash
+mkdir -p ~/ansible-project
+
+cat > ~/ansible-project/inventory.ini <<'EOF'
+[sftp_target]
+target ansible_connection=community.aws.aws_ssm ansible_aws_ssm_instance_id=i-0cce45e09ec35a12a ansible_aws_ssm_region=us-east-1 ansible_aws_ssm_bucket_name=mds-linux-hardening-1b-273517699789-us-east-1 ansible_python_interpreter=/usr/bin/python3
+EOF
+```
+
+The inventory placed the host alias `target` in the `sftp_target` group. It selected the target instance, `us-east-1`, the transfer bucket, and the target's Python interpreter. The original run used `community.aws.aws_ssm`; the published [inventory example](../ansible/inventory/hosts.example.yml) uses `amazon.aws.aws_ssm`. The command above preserves the connection name I used in the lab.
+
+Still in the admin session, I tested whether Ansible could transfer and execute a module on the private target:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini sftp_target -m ansible.builtin.ping -vv
+```
+
+The result reported `target | SUCCESS`, `"ping": "pong"`, and `"changed": false`. This confirmed remote Ansible execution through SSM, including the temporary S3 transfer, without changing the target. Ansible's ping module tests module execution; it does not send an ICMP network ping. AWS access came from the admin node's instance role.
+
+Before applying changes, I gathered the target's operating-system facts through the same connection:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target -m ansible.builtin.setup -a 'filter=ansible_distribution*'
+```
+
+The facts identified Ubuntu `24.04`, release `noble`, and reported `changed: false`. I now had a working inventory and confirmation that Ansible was managing the intended operating system.
+
+### 2.5 I prepared the data filesystem and checked the chroot through Ansible
+
+Terraform attached a separate encrypted 5-GiB disk to the target. I needed to identify that disk, check whether it already contained a filesystem, and mount it before giving the SFTP account an upload directory. All the following Ansible commands were entered in the **admin node's SSM shell** and ran against `target`.
+
+I began with a read-only storage inspection:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.shell \
+  -a 'lsblk -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINTS; echo "--- /srv/sftp-data ---"; findmnt --target /srv/sftp-data || true; echo "--- related fstab entries ---"; grep -nE "sftp|nvme|xvd|sd[f-z]" /etc/fstab || true'
+```
+
+The output identified the 20-GiB root disk as `nvme0n1` and the separate 5-GiB disk as `nvme1n1`. The data disk had no filesystem type or mount point, and no related persistent mount entry appeared. I checked it for existing filesystem signatures before formatting:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.shell \
+  -a 'sudo wipefs --no-act /dev/nvme1n1; sudo blkid /dev/nvme1n1 || true'
+```
+
+The empty signature check agreed with the earlier disk inspection. Having identified the blank data volume, I used Ansible's filesystem module to create ext4:
 
 ```bash
 ansible -i ~/ansible-project/inventory.ini target \
@@ -1114,7 +1258,7 @@ systemctl is-enabled auditd
 systemctl is-active auditd
 ```
 
-The install command added the audit service and plugins. `enable --now` set the service to start at boot and started it immediately; the final checks confirmed it was `enabled` and `active`. With auditd running, I checked the audit subsystem's status and the rules currently loaded in the kernel. `auditctl -s` reports whether auditing is enabled and whether events have been lost, while `auditctl -l` lists the active rules: 
+The install command added the audit service and plugins. `enable --now` set the service to start at boot and started it immediately; the final checks confirmed it was `enabled` and `active`. With auditd running, I checked the audit subsystem's status and the rules currently loaded in the kernel. `auditctl -s` reports whether auditing is enabled and whether events have been lost, while `auditctl -l` lists the active rules:
 
 ```bash
 sudo auditctl -s
