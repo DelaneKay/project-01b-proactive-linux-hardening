@@ -576,7 +576,7 @@ SSH listened on local port 22, alongside resolver and time-service sockets. That
 
 ### 2.3 I opened the admin node and prepared the Ansible controller
 
-Ansible would run on the private admin EC2 and manage the target through SSM. From WSL, I opened the admin node's session:
+With the target's starting state recorded, I moved to the private admin EC2. It would be the Ansible controller: the machine from which I prepared and ran the automation against the target through SSM. Before changing the target, I first needed to prepare that controller. From WSL, I opened the admin node's session:
 
 ```bash
 aws ssm start-session \
