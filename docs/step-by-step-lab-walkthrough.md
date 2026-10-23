@@ -504,9 +504,9 @@ Terraform downloaded the signed AWS provider `6.69.1` and reported `Success! The
 
 I deployed the lab with Terraform from the original WSL project directory. The two private instances and transfer bucket then became the inputs for SSM, Ansible, and SFTP. [outputs.tf](../terraform/outputs.tf) exposes the instance and bucket identifiers.
 
-The target instance ID was `i-0cce45e09ec35a12a`, and I used the `mds-devsecops-lab` profile in `us-east-1`. The historical identifiers below belong to the lab that was later destroyed.
+Terraform created two private EC2 instances: the Ansible admin node, `i-0d9cc5ae05f797442`, and the SFTP target, `i-0cce45e09ec35a12a`. I used the `mds-devsecops-lab` profile in `us-east-1` for the AWS commands that follow. These are the historical IDs from the lab, which I destroyed after the demonstration.
 
-**Checkpoint:** the AWS resources existed before I began the access configuration.
+**Checkpoint:** deployment was complete, and I had the instance IDs needed to configure and test access.
 
 ## 2. Access management and SSH hardening
 
