@@ -1091,27 +1091,26 @@ sftp -P 2222 \
   sftpdata@127.0.0.1
 ```
 
-Authentication succeeded and the client displayed its `sftp>` prompt. I checked the starting directory and whether the account could navigate outside the chroot:
+The client reported `Connected to 127.0.0.1.` and displayed its `sftp>` prompt. I entered these checks to see where the account started and whether it could move outside the chroot:
 
 ```text
-pwd
-ls -ld /
-ls -ld /upload
-cd /
-cd ..
-pwd
-ls /etc
+sftp> pwd
+Remote working directory: /upload
+sftp> ls -ld /
+ls: Invalid flag -d
+sftp> ls -ld /upload
+ls: Invalid flag -d
+sftp> cd /
+sftp> cd ..
+sftp> pwd
+Remote working directory: /
+sftp> ls /etc
+Can't ls: "/etc" not found
 ```
 
-The client did not support the `-d` option in the two listing commands, so I corrected the listing at the SFTP prompt:
+The `-d` listing option was invalid in this SFTP client, so those two lines did not tell me anything about directory permissions. The successful connection, starting directory `/upload`, inability to move above `/`, and absence of `/etc` were the observed confinement results.
 
-```text
-ls -l /
-```
-
-The account started in `/upload`. Moving up from `/` kept it at the chroot root, and `/etc` was unavailable. These results showed that the account's filesystem view was restricted.
-
-I had accepted the server's host key before independently comparing its fingerprint; that comparison was completed later. Layer 4 covers the host-key comparison, upload/download integrity check, denied write at the chroot root, and refused shell command.
+I had accepted the server's host key before independently comparing its fingerprint; that comparison was completed later. Layer 4 shows the file-transfer integrity check, denied write at the chroot root, refused shell command, and the `bye` command that ended the SFTP session.
 
 ## 3. Linux operating system hardening
 
@@ -1448,11 +1447,12 @@ sftp> get /upload/mds-sftp-test.txt /tmp/mds-sftp-downloaded.txt
 sftp> !sha256sum /tmp/mds-sftp-test.txt /tmp/mds-sftp-downloaded.txt
 d138cba463fc98be7e2c7692f969a71d0a4c17c095462a4e76ca03582535090e  /tmp/mds-sftp-test.txt
 d138cba463fc98be7e2c7692f969a71d0a4c17c095462a4e76ca03582535090e  /tmp/mds-sftp-downloaded.txt
+sftp> bye
 ```
 
 The test file was uploaded into `/upload`.
 
-`get` downloads the remote file to WSL, and `sha256sum` calculates hashes for the original and downloaded copies; matching hashes show the transfer preserved the content. The captured `get` command downloaded it to a different local filename, and `!sha256sum` compared the two copies on WSL. Both digests matched. 
+`get` downloads the remote file to WSL, and `sha256sum` calculates hashes for the original and downloaded copies; matching hashes show the transfer preserved the content. The captured `get` command downloaded it to a different local filename, and `!sha256sum` compared the two copies on WSL. Both digests matched. After the check, `bye` closed SFTP and returned me to the `devsecops@MERLANE:~$` WSL prompt.
 
 The target-side destination was `/srv/sftp-data/upload/mds-sftp-test.txt`. Inside the chroot, that same location appeared as `/upload/mds-sftp-test.txt`. The successful transfer proved this file could make the round trip intact.
 
