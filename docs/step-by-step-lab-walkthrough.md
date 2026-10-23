@@ -625,7 +625,17 @@ These dependencies let the admin node run Ansible and open the SSM connection to
 
 I ran Ansible from the private admin node using the `amazon.aws.aws_ssm` connection and an inventory for the target instance, Region, and transfer bucket. The published [inventory example](../ansible/inventory/hosts.example.yml) and [collection requirements](../ansible/requirements.yml) document these settings.
 
-My first attempt used the WSL path `/home/devsecops/ansible-project/inventory.ini`. Ansible could not find that inventory, skipped the target, and made no changes. I corrected the working location by running the commands in the admin node’s SSM session and using `/home/ssm-user/ansible-project/inventory.ini` for the target alias `target`.
+My first attempt used the WSL path `/home/devsecops/ansible-project/inventory.ini`. Ansible could not find that inventory, skipped the target, and made no changes. I switched to the **admin node's SSM shell**, where the inventory was at `/home/ssm-user/ansible-project/inventory.ini` and identified the target as `target`. The exact command that originally wrote this inventory file was not captured.
+
+This recorded read-only Ansible command shows how I addressed the target through the corrected inventory. I entered it in the admin node's SSM shell, not on the target itself:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.shell \
+  -a 'getent group sftp-only || true; getent passwd sftpdata || true; test -d /srv/sftp-data/upload && stat -c "%U:%G %a %n" /srv/sftp-data/upload || echo "/srv/sftp-data/upload does not exist"'
+```
+
+Here `-i` selects the admin node's inventory, `target` selects the private EC2 host, and `-b` runs the read-only checks with elevated privileges. The command reached the target but returned no text, so I ran a clearer check in the next step.
 
 ### 2.5 I checked the data mount, chroot boundary, and SFTP prerequisites with Ansible
 
@@ -640,15 +650,7 @@ root:root 755 /srv/sftp-data
 
 That result shows `/srv/sftp-data` was owned by `root:root` with mode `755`, so the restricted account could not write to the chroot root. This was a read-only `stat` check; Ansible's `CHANGED` label did not mean it modified the directory. The captured result does not include the full Ansible command used for this particular check.
 
-Next I checked whether the planned group, account, and upload directory already existed. I ran this from the **admin node's SSM shell**, with Ansible sending the checks to the target:
-
-```bash
-ansible -i ~/ansible-project/inventory.ini target \
-  -b -m ansible.builtin.shell \
-  -a 'getent group sftp-only || true; getent passwd sftpdata || true; test -d /srv/sftp-data/upload && stat -c "%U:%G %a %n" /srv/sftp-data/upload || echo "/srv/sftp-data/upload does not exist"'
-```
-
-It returned no text, which did not give me a clear result for each item. I reran the check so each test printed its own status:
+The first group, account, and upload-directory check in Phase 2.4 returned no text, which did not give me a clear result for each item. Still in the **admin node's SSM shell**, I reran it through Ansible so each test printed its own status:
 
 ```bash
 ansible -i ~/ansible-project/inventory.ini target \
