@@ -1,0 +1,18 @@
+---
+- name: Inspect effective SSH server settings
+  hosts: target
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Read selected effective SSH settings
+      ansible.builtin.shell: |
+        sshd -T | grep -E '^(port|listenaddress|passwordauthentication|pubkeyauthentication|permitrootlogin|allowtcpforwarding|x11forwarding|permittty|usepam)'
+      args:
+        executable: /bin/bash
+      register: sshd_settings
+      changed_when: false
+
+    - name: Display selected SSH settings
+      ansible.builtin.debug:
+        var: sshd_settings.stdout_lines
