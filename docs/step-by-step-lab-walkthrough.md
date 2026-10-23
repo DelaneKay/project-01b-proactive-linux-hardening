@@ -1440,21 +1440,28 @@ I reached the target's SFTP service through local port `2222` and compared the s
 
 ### 4.2 I uploaded and downloaded the text file, then compared its hashes
 
-At the SFTP prompt in WSL, I entered the commands below without copying the prompt itself:
+At the `sftp>` prompt in WSL, I created a small local test file, uploaded it to the chroot's `/upload` directory, downloaded it under a second name, and compared SHA-256 hashes:
 
 ```text
+sftp> !printf 'SFTP hardening lab transfer test\n' > /tmp/mds-sftp-test.txt
+sftp> put /tmp/mds-sftp-test.txt /upload/mds-sftp-test.txt
+Uploading /tmp/mds-sftp-test.txt to /upload/mds-sftp-test.txt
+mds-sftp-test.txt                                     100%   33     0.1KB/s   00:00
 sftp> get /upload/mds-sftp-test.txt /tmp/mds-sftp-downloaded.txt
+Fetching /upload/mds-sftp-test.txt to /tmp/mds-sftp-downloaded.txt
+mds-sftp-test.txt                                     100%   33     0.0KB/s   00:01
 sftp> !sha256sum /tmp/mds-sftp-test.txt /tmp/mds-sftp-downloaded.txt
 d138cba463fc98be7e2c7692f969a71d0a4c17c095462a4e76ca03582535090e  /tmp/mds-sftp-test.txt
 d138cba463fc98be7e2c7692f969a71d0a4c17c095462a4e76ca03582535090e  /tmp/mds-sftp-downloaded.txt
+sftp> put /tmp/mds-sftp-test.txt /mds-write-denied-test.txt
+Uploading /tmp/mds-sftp-test.txt to /mds-write-denied-test.txt
+dest open "/mds-write-denied-test.txt": Permission denied
 sftp> bye
 ```
 
-The test file was uploaded into `/upload`.
+The `100%` lines show that both 33-byte transfers completed. The identical SHA-256 values confirm that the downloaded copy retained the original content. The final upload attempt shows the account could not write at the chroot root. I then typed `bye`; the SFTP client returned to the `devsecops@MERLANE:~$` WSL prompt.
 
-`get` downloads the remote file to WSL, and `sha256sum` calculates hashes for the original and downloaded copies; matching hashes show the transfer preserved the content. The captured `get` command downloaded it to a different local filename, and `!sha256sum` compared the two copies on WSL. Both digests matched. After the check, `bye` closed SFTP and returned me to the `devsecops@MERLANE:~$` WSL prompt.
-
-The target-side destination was `/srv/sftp-data/upload/mds-sftp-test.txt`. Inside the chroot, that same location appeared as `/upload/mds-sftp-test.txt`. The successful transfer proved this file could make the round trip intact.
+The target-side destination was `/srv/sftp-data/upload/mds-sftp-test.txt`. Inside the chroot, that same location appeared as `/upload/mds-sftp-test.txt`.
 
 ### 4.3 I tested actions the transfer account should be denied
 
