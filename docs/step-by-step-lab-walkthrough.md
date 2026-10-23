@@ -421,11 +421,11 @@ Private S3 transfer bucket -> S3 Gateway VPC endpoint
 | Instance identities | Separate admin/target roles; minimal agent actions and scoped controller permissions | Limit each server's AWS permissions to its duties | [iam.tf](../terraform/iam.tf) |
 | Transfer storage | Private encrypted S3 bucket, HTTPS-only policy, temporary-object cleanup | Stage Ansible files and the SFTP public key | [s3.tf](../terraform/s3.tf) |
 
-A private subnet still needs a route for permitted outbound traffic. My private route tables send general egress to the NAT Gateway; its public subnet routes to the Internet Gateway. An S3 prefix-list route sends S3 traffic through the gateway endpoint. The endpoint policy and IAM permissions still apply. The endpoint itself is defined in `network.tf`, while the bucket and its policy are in `s3.tf`.
+After settling the network design, I checked how the private instances would reach the services they needed. A private subnet still needs an outbound route: my private route tables send general egress through the NAT Gateway, whose public subnet routes to the Internet Gateway. For S3, a more specific prefix-list route sends traffic through the S3 gateway endpoint. The endpoint policy and the instance’s IAM permissions still control which S3 actions are allowed. I defined the endpoint in `network.tf` and the transfer bucket and its policy in `s3.tf`.
 
-The security groups permit outbound TCP 443. The instance bootstrap in `compute.tf` changes Ubuntu package sources to HTTPS so package installation fits that policy. If package updates fail, I inspect repository URLs and connectivity before broadening the rules.
+The security groups allow outbound TCP 443 for HTTPS traffic, including Systems Manager communication and package downloads. In [compute.tf](../terraform/compute.tf), the bootstrap changes Ubuntu’s package sources to HTTPS to fit that rule. If package updates fail, I check repository URLs and connectivity before considering any broader network access.
 
-Before writing the smaller instance policy, I inspected AWS's managed `AmazonSSMManagedInstanceCore` policy. First I looked up its metadata, then read its active `v2` document and a compact summary of its actions:
+Network reachability alone does not authorize an instance to use Systems Manager, so I next reviewed the IAM permissions needed by the SSM agent. Before writing a narrower instance policy, I inspected AWS’s managed `AmazonSSMManagedInstanceCore` policy as a baseline. I looked up its metadata, read its active `v2` document, and summarized its actions:
 
 ```bash
 aws iam get-policy \
