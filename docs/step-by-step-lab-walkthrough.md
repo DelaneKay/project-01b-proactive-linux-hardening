@@ -1241,9 +1241,9 @@ sudo ip6tables -S
 
 Both outputs showed `ACCEPT` policies for INPUT, FORWARD, and OUTPUT.
 
-Before the lab changes, UFW was inactive. After enabling it manually, I verified `active`, default `deny (incoming)`, `allow (outgoing)`, low logging, and `IPV6=yes`. There is no inbound SSH exception because the management path is SSM.
+Before changing the firewall, I confirmed that my SSM session to the target was working. Because I managed the server through SSM, I did not need to allow inbound SSH. On a host managed through SSH, I would add the SSH allow rule before enabling a default-deny firewall so I would not lock out my own connection.
 
-I set UFW to deny incoming connections and allow outbound traffic, then enabled it and checked the resulting policy. I already had SSM access before enabling the firewall; an SSH-managed host needs its management rule arranged first.
+I set UFW to deny incoming connections and allow outbound traffic, then enabled it:
 
 ```bash
 sudo ufw default deny incoming
@@ -1252,9 +1252,9 @@ sudo ufw --force enable
 sudo ufw status verbose
 ```
 
-**Problem I encountered:** I accidentally pasted `ufw status numbered` together with `IPV6=yes`, which produced a syntax error. I reran the command on its own. Earlier, `ufw: command not found` came from WSL, not the target. I checked the host instead of installing packages on the wrong machine.
+**Problem I encountered:** I accidentally pasted `ufw status numbered` together with `IPV6=yes`, which caused a syntax error. I reran the status command by itself. Earlier, `ufw: command not found` came from WSL rather than the target; I switched to the target terminal instead of installing or configuring the firewall in the wrong environment.
 
-**Checkpoint:** UFW reported the intended policy. I opened a fresh target SSM session and ran `hostname`; it returned `ip-10-20-20-177`, confirming management access still worked.
+After enabling UFW, it reported `active`. I opened a fresh target SSM session and ran `hostname`; it returned `ip-10-20-20-177`, confirming that SSM management still worked with the firewall enabled.
 
 ### 3.4 I verified auditd, then loaded rules before testing events
 
