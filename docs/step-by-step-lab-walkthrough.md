@@ -51,7 +51,7 @@ The admin and target instances had no public IPs or inbound security-group rules
 | Layer | Sequence |
 | --- | --- |
 | 1. AWS infrastructure | Understand automation → prepare WSL → check/install tools → authenticate to AWS → get the project files → inspect AWS → define infrastructure → plan and deploy |
-| 2. Access management and SSH hardening | Confirm SSM connectivity → inspect the target → prepare its disk → prepare the Ansible controller → stage the public key and configuration → review the access policy → apply and check it |
+| 2. Access management and SSH hardening | Confirm SSM connectivity → inspect the target → prepare the Ansible controller and inventory → check the data mount and chroot → create the SFTP identity → stage the public key and configuration → apply and check it |
 | 3. Linux operating system hardening | Check packages and updates → inspect AppArmor → verify the host firewall → load and test audit rules → verify kernel settings → review host health |
 | 4. Validation and cleanup | Verify the server identity → transfer the text file → test denied actions → retain evidence → destroy resources → check the result |
 
@@ -548,24 +548,7 @@ SSH listened on local port 22, alongside resolver and time-service sockets. That
 
 **Checkpoint:** I identified the target before interpreting its service and firewall output.
 
-### 2.3 I checked the data mount and chroot boundary
-
-Terraform attached a separate encrypted 5-GiB disk to the target. The SFTP data area was mounted at `/srv/sftp-data`, which became the chroot root. A **chroot** gives the SFTP account a restricted filesystem view: inside it, `/` represents this directory. The [target playbook](../ansible/playbooks/harden-target.yml) checks that `/srv/sftp-data` is a mount point and stops if it is missing; the playbook does not format or mount the disk.
-
-The exact commands used to format and mount the disk were not captured, so I cannot present a command sequence for that step as part of the original run. The mounted filesystem was in place before I configured the SFTP account.
-
-After the admin controller and inventory were available, I checked the ownership and permissions of the chroot root through Ansible. The captured result was:
-
-```text
-target | CHANGED | rc=0 >>
-root:root 755 /srv/sftp-data
-```
-
-The output shows `/srv/sftp-data` was owned by `root:root` with mode `755`. That meets OpenSSH's requirement that the chroot root is not writable by the restricted SFTP account. The task only read file metadata; Ansible's `CHANGED` label did not mean this check modified the directory. The captured text contains the result but not the full command that produced it, so I cannot give an exact historical invocation for this check.
-
-**Checkpoint:** the chroot root had the required ownership and permissions. I could then create a separate writable `/srv/sftp-data/upload` directory for the SFTP account.
-
-### 2.4 I opened the admin node and prepared the Ansible controller
+### 2.3 I opened the admin node and prepared the Ansible controller
 
 Ansible runs tasks against a target from a **controller**. In this lab the controller was the private admin EC2, while WSL remained my Terraform workstation. I opened the admin node through Session Manager, then checked that I was on the right host before preparing its tools:
 
@@ -638,17 +621,26 @@ aws --version
 
 These dependencies let the admin node run Ansible and open the SSM connection to the target. The next step was to put the inventory and connection settings on the controller.
 
-### 2.5 I configured Ansible to reach the private target
+### 2.4 I configured Ansible to reach the private target
 
 I ran Ansible from the private admin node using the `amazon.aws.aws_ssm` connection and an inventory for the target instance, Region, and transfer bucket. The published [inventory example](../ansible/inventory/hosts.example.yml) and [collection requirements](../ansible/requirements.yml) document these settings.
 
 My first attempt used the WSL path `/home/devsecops/ansible-project/inventory.ini`. Ansible could not find that inventory, skipped the target, and made no changes. I corrected the working location by running the commands in the admin node’s SSM session and using `/home/ssm-user/ansible-project/inventory.ini` for the target alias `target`.
 
-### 2.6 I created the SFTP account and upload directory with Ansible
+### 2.5 I checked the data mount, chroot boundary, and SFTP prerequisites with Ansible
 
-I used Ansible ad-hoc commands from the admin node to prepare the target account before applying the full SSH configuration. The `-i` option points to the admin node’s inventory, `target` selects the managed host, `-b` enables privilege escalation, and `-m` selects the Ansible module.
+Terraform attached a separate encrypted 5-GiB disk to the target. The SFTP data area was mounted at `/srv/sftp-data`, which became the chroot root. A **chroot** gives the SFTP account a restricted filesystem view: inside it, `/` represents this directory. The [target playbook](../ansible/playbooks/harden-target.yml) checks that `/srv/sftp-data` is a mount point and stops if it is missing; the playbook does not format or mount the disk. The exact commands used to format and mount the disk were not captured.
 
-Before creating anything, I checked whether the group, account, or upload directory already existed. My first read-only shell check returned no text, so it did not clearly establish the state of each item:
+With the controller and target inventory ready, I checked the chroot root's owner and permissions through Ansible. The captured result was:
+
+```text
+target | CHANGED | rc=0 >>
+root:root 755 /srv/sftp-data
+```
+
+That result shows `/srv/sftp-data` was owned by `root:root` with mode `755`, so the restricted account could not write to the chroot root. This was a read-only `stat` check; Ansible's `CHANGED` label did not mean it modified the directory. The captured result does not include the full Ansible command used for this particular check.
+
+Next I checked whether the planned group, account, and upload directory already existed. I ran this from the **admin node's SSM shell**, with Ansible sending the checks to the target:
 
 ```bash
 ansible -i ~/ansible-project/inventory.ini target \
@@ -656,7 +648,7 @@ ansible -i ~/ansible-project/inventory.ini target \
   -a 'getent group sftp-only || true; getent passwd sftpdata || true; test -d /srv/sftp-data/upload && stat -c "%U:%G %a %n" /srv/sftp-data/upload || echo "/srv/sftp-data/upload does not exist"'
 ```
 
-I reran the check with a separate result for each item:
+It returned no text, which did not give me a clear result for each item. I reran the check so each test printed its own status:
 
 ```bash
 ansible -i ~/ansible-project/inventory.ini target \
@@ -664,9 +656,22 @@ ansible -i ~/ansible-project/inventory.ini target \
   -a 'if getent group sftp-only; then echo "sftp-only group exists"; else echo "sftp-only group absent"; fi; if getent passwd sftpdata; then echo "sftpdata account exists"; else echo "sftpdata account absent"; fi; if test -d /srv/sftp-data/upload; then stat -c "%U:%G %a %n" /srv/sftp-data/upload; else echo "/srv/sftp-data/upload absent"; fi'
 ```
 
-Ansible reported `target | CHANGED | rc=0`, followed by `sftp-only group absent`, `sftpdata account absent`, and `/srv/sftp-data/upload absent`. These were read-only queries; the shell module's `CHANGED` status did not mean they created or changed anything.
+The second result was:
 
-With those prerequisites confirmed, I created the dedicated group from the admin node's SSM shell:
+```text
+target | CHANGED | rc=0 >>
+sftp-only group absent
+sftpdata account absent
+/srv/sftp-data/upload absent
+```
+
+These Ansible shell tasks only queried the target. Their `CHANGED` label was the module's status, not evidence that the checks created a group, account, or directory. Having confirmed that all three were absent, I could create them in the next step while keeping the chroot root owned by `root`.
+
+### 2.6 I created the SFTP account and upload directory with Ansible
+
+I used Ansible ad-hoc commands from the admin node to prepare the target account before applying the full SSH configuration. The `-i` option points to the admin node’s inventory, `target` selects the managed host, `-b` enables privilege escalation, and `-m` selects the Ansible module.
+
+After the Ansible checks showed the group, account, and upload directory were absent, I created the dedicated group from the admin node's SSM shell:
 
 ```bash
 ansible -i ~/ansible-project/inventory.ini target \
