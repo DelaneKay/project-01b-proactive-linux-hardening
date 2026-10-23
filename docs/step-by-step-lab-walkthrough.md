@@ -410,10 +410,14 @@ Private subnet egress -> one public-subnet NAT Gateway -> Internet
 Private S3 transfer bucket -> S3 Gateway VPC endpoint
 ```
 
+I compared a self-managed NAT instance with AWS’s managed NAT Gateway. A NAT instance would be another Linux server for me to configure, harden, patch, monitor, and recover if it failed. I chose the managed NAT Gateway to avoid adding that server and its operational work, accepting the higher service cost for this temporary lab. I used one Gateway in one Availability Zone because the lab was temporary and did not need multi-AZ egress. My planning estimate was about `$32.85/month` for continuous NAT Gateway use and `$22.85/month` for the two EC2 instances, before data processing and other charges. These were estimates, not current quotes. Since the existing budget alert sent notifications rather than stopping resources, I planned to destroy the lab when the demonstration was complete.
+
+The table below summarizes the decisions that shaped the architecture and points to the Terraform files that implement each one:
+
 | Decision | Value I chose | Why it matters | Terraform implementation |
 | --- | --- | --- | --- |
 | Network | VPC `10.20.0.0/16`; NAT/public `10.20.0.0/24`; private admin `10.20.10.0/24`; private target `10.20.20.0/24` | Separate routing roles and avoid the existing VPC range | [network.tf](../terraform/network.tf) |
-| Outbound access | One NAT Gateway; S3 Gateway endpoint on private route tables | Package/SSM traffic needs egress; S3 transfers use the endpoint | [network.tf](../terraform/network.tf) |
+| Outbound access | One NAT Gateway instead of a NAT instance; S3 Gateway endpoint on private route tables | Avoid operating another Linux host for general egress; route S3 transfers through the endpoint | [network.tf](../terraform/network.tf) |
 | Network access rules | No inbound rules; outbound HTTPS | Keep management off public SSH and allow required HTTPS services | [security-groups.tf](../terraform/security-groups.tf) |
 | Compute | Ubuntu 24.04 LTS; `t3.small` admin and `t3.micro` target | Give Ansible a larger controller while keeping the target small | [ami.tf](../terraform/ami.tf), [compute.tf](../terraform/compute.tf) |
 | Storage | Encrypted 20-GiB gp3 roots and separate encrypted 5-GiB target data disk | Explicit encryption and separation of transfer data from the OS | [compute.tf](../terraform/compute.tf) |
@@ -473,8 +477,6 @@ The managed policy included parameter-read, patching, inventory, compliance, and
 ```
 
 The admin role additionally needed permission to start a session to the target and use the lab transfer bucket. Ansible's SSM connection stages temporary module files in S3. I scoped the controller's S3 actions to that bucket and its objects. The target downloads short-lived presigned URLs, so network access to S3 is required even without separate target S3 credentials. This is described in the [Ansible SSM connection documentation](https://docs.ansible.com/projects/ansible/latest/collections/amazon/aws/aws_ssm_connection.html).
-
-I chose one managed NAT Gateway because it saved me operating another Linux server. The single-AZ design was appropriate for this temporary exercise. My estimate was about `$32.85/month` for continuous NAT usage and `$22.85/month` for the two instances before other charges. Those were planning estimates, not current quotes. My budget alert was a notification, so teardown was part of the plan from the beginning.
 
 **Checkpoint:** I can explain the purpose of each resource and its permission boundary before creating it.
 
