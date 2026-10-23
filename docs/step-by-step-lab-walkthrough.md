@@ -623,11 +623,121 @@ These dependencies let the admin node run Ansible and open the SSM connection to
 
 ### 2.4 I configured Ansible to reach the private target
 
-I ran Ansible from the private admin node using the `amazon.aws.aws_ssm` connection and an inventory for the target instance, Region, and transfer bucket. The published [inventory example](../ansible/inventory/hosts.example.yml) and [collection requirements](../ansible/requirements.yml) document these settings.
+With the controller prerequisites checked, I needed an inventory that told Ansible which EC2 instance to manage, which SSM connection to use, and where to stage temporary module files. From my WSL project directory, I first read the transfer bucket name from Terraform's state:
 
-My first attempt used the WSL path `/home/devsecops/ansible-project/inventory.ini`. Ansible could not find that inventory, skipped the target, and made no changes. I switched to the **admin node's SSM shell**, where the inventory was at `/home/ssm-user/ansible-project/inventory.ini` and identified the target as `target`. The exact command that originally wrote this inventory file was not captured.
+```bash
+terraform state show aws_s3_bucket.ansible_transfer
+```
 
-This recorded read-only Ansible command shows how I addressed the target through the corrected inventory. I entered it in the admin node's SSM shell, not on the target itself:
+The bucket was `mds-linux-hardening-1b-273517699789-us-east-1`. I then opened the admin node's SSM session from WSL:
+
+```bash
+aws ssm start-session --target i-0d9cc5ae05f797442 --profile mds-devsecops-lab --region us-east-1
+```
+
+Inside the **admin node's SSM shell**, I created the working directory and wrote the inventory:
+
+```bash
+mkdir -p ~/ansible-project
+
+cat > ~/ansible-project/inventory.ini <<'EOF'
+[sftp_target]
+target ansible_connection=community.aws.aws_ssm ansible_aws_ssm_instance_id=i-0cce45e09ec35a12a ansible_aws_ssm_region=us-east-1 ansible_aws_ssm_bucket_name=mds-linux-hardening-1b-273517699789-us-east-1 ansible_python_interpreter=/usr/bin/python3
+EOF
+```
+
+The inventory placed the host alias `target` in the `sftp_target` group. It selected the target instance, `us-east-1`, the transfer bucket, and the target's Python interpreter. The original run used `community.aws.aws_ssm`; the published [inventory example](../ansible/inventory/hosts.example.yml) uses `amazon.aws.aws_ssm`. The command above preserves the connection name I used in the lab.
+
+Still in the admin session, I tested whether Ansible could transfer and execute a module on the private target:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini sftp_target -m ansible.builtin.ping -vv
+```
+
+The result reported `target | SUCCESS`, `"ping": "pong"`, and `"changed": false`. This confirmed remote Ansible execution through SSM, including the temporary S3 transfer, without changing the target. Ansible's ping module tests module execution; it does not send an ICMP network ping. AWS access came from the admin node's instance role.
+
+Before applying changes, I gathered the target's operating-system facts through the same connection:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target -m ansible.builtin.setup -a 'filter=ansible_distribution*'
+```
+
+The facts identified Ubuntu `24.04`, release `noble`, and reported `changed: false`. I now had a working inventory and confirmation that Ansible was managing the intended operating system.
+
+### 2.5 I prepared the data filesystem and checked the chroot through Ansible
+
+Terraform attached a separate encrypted 5-GiB disk to the target. I needed to identify that disk, check whether it already contained a filesystem, and mount it before giving the SFTP account an upload directory. All the following Ansible commands were entered in the **admin node's SSM shell** and ran against `target`.
+
+I began with a read-only storage inspection:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.shell \
+  -a 'lsblk -o NAME,SIZE,FSTYPE,TYPE,MOUNTPOINTS; echo "--- /srv/sftp-data ---"; findmnt --target /srv/sftp-data || true; echo "--- related fstab entries ---"; grep -nE "sftp|nvme|xvd|sd[f-z]" /etc/fstab || true'
+```
+
+The output identified the 20-GiB root disk as `nvme0n1` and the separate 5-GiB disk as `nvme1n1`. The data disk had no filesystem type or mount point, and no related persistent mount entry appeared. I checked it for existing filesystem signatures before formatting:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.shell \
+  -a 'sudo wipefs --no-act /dev/nvme1n1; sudo blkid /dev/nvme1n1 || true'
+```
+
+The empty signature check agreed with the earlier disk inspection. Having identified the blank data volume, I used Ansible's filesystem module to create ext4:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m community.general.filesystem \
+  -a 'fstype=ext4 dev=/dev/nvme1n1'
+```
+
+Ansible reported `CHANGED`. This formatting step applied to the data disk verified in my lab; a new deployment needs its own device checks before using a formatting command.
+
+I then read the filesystem's UUID so the persistent mount would not depend on its NVMe device name:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.command \
+  -a 'blkid /dev/nvme1n1'
+```
+
+The filesystem was ext4 with UUID `440e974b-49b2-4f0c-8675-28cb69d6bbe4`. I used that UUID with Ansible's mount module to manage the live mount and its `/etc/fstab` entry:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.posix.mount \
+  -a 'path=/srv/sftp-data src=UUID=440e974b-49b2-4f0c-8675-28cb69d6bbe4 fstype=ext4 opts=defaults,nofail state=mounted'
+```
+
+The returned result was `SUCCESS`, with `changed: false` and `boot: yes`: Ansible found the requested mount and persistent entry already in place. The `nofail` option allowed the server to boot if the data disk was unavailable. I verified the active filesystem and saved entry:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.shell \
+  -a 'findmnt --target /srv/sftp-data; df -hT /srv/sftp-data; grep -F "UUID=440e974b-49b2-4f0c-8675-28cb69d6bbe4" /etc/fstab'
+```
+
+The result showed `/dev/nvme1n1` mounted as ext4 at `/srv/sftp-data`, with 4.9 GiB total and about 4.6 GiB available. The matching UUID entry used `defaults,nofail`. These identifiers belong to the original lab.
+
+This mount point would also become the **chroot root**: the SFTP account would see it as `/`. Before creating a writable child directory, I checked that the chroot root had the ownership and permissions OpenSSH requires:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.command \
+  -a 'stat -c "%U:%G %a %n" /srv/sftp-data'
+```
+
+The result was:
+
+```text
+target | CHANGED | rc=0 >>
+root:root 755 /srv/sftp-data
+```
+
+That result shows `/srv/sftp-data` was owned by `root:root` with mode `755`, so the restricted account could not write to the chroot root. This was a read-only `stat` check; Ansible's `CHANGED` label did not mean it modified the directory.
+
+Next, I checked whether the SFTP group, account, and upload directory already existed:
 
 ```bash
 ansible -i ~/ansible-project/inventory.ini target \
@@ -635,22 +745,7 @@ ansible -i ~/ansible-project/inventory.ini target \
   -a 'getent group sftp-only || true; getent passwd sftpdata || true; test -d /srv/sftp-data/upload && stat -c "%U:%G %a %n" /srv/sftp-data/upload || echo "/srv/sftp-data/upload does not exist"'
 ```
 
-Here `-i` selects the admin node's inventory, `target` selects the private EC2 host, and `-b` runs the read-only checks with elevated privileges. The command reached the target but returned no text, so I ran a clearer check in the next step.
-
-### 2.5 I checked the data mount, chroot boundary, and SFTP prerequisites with Ansible
-
-Terraform attached a separate encrypted 5-GiB disk to the target. The SFTP data area was mounted at `/srv/sftp-data`, which became the chroot root. A **chroot** gives the SFTP account a restricted filesystem view: inside it, `/` represents this directory. The [target playbook](../ansible/playbooks/harden-target.yml) checks that `/srv/sftp-data` is a mount point and stops if it is missing; the playbook does not format or mount the disk. The exact commands used to format and mount the disk were not captured.
-
-With the controller and target inventory ready, I checked the chroot root's owner and permissions through Ansible. The captured result was:
-
-```text
-target | CHANGED | rc=0 >>
-root:root 755 /srv/sftp-data
-```
-
-That result shows `/srv/sftp-data` was owned by `root:root` with mode `755`, so the restricted account could not write to the chroot root. This was a read-only `stat` check; Ansible's `CHANGED` label did not mean it modified the directory. The captured result does not include the full Ansible command used for this particular check.
-
-The first group, account, and upload-directory check in Phase 2.4 returned no text, which did not give me a clear result for each item. Still in the **admin node's SSM shell**, I reran it through Ansible so each test printed its own status:
+This returned no text, which did not give me a clear result for each item. Still in the admin node's SSM shell, I reran it through Ansible so each test printed its own status:
 
 ```bash
 ansible -i ~/ansible-project/inventory.ini target \
