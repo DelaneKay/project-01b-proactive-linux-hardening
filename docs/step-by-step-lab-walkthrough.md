@@ -478,18 +478,17 @@ The managed policy included parameter-read, patching, inventory, compliance, and
 }
 ```
 
-The admin role additionally needed permission to start a session to the target and use the lab transfer bucket. Ansible's SSM connection stages temporary module files in S3. I scoped the controller's S3 actions to that bucket and its objects. The target downloads short-lived presigned URLs, so network access to S3 is required even without separate target S3 credentials. This is described in the [Ansible SSM connection documentation](https://docs.ansible.com/projects/ansible/latest/collections/amazon/aws/aws_ssm_connection.html).
+The S3 transfer process also determined what the admin role needed. It could start an SSM session to the target and use the transfer bucket to stage Ansible’s temporary module files. I restricted its S3 permissions to listing that bucket and reading, writing, and deleting objects within it. The target needed network access to S3 to fetch the files from short-lived presigned URLs, but it did not need its own S3 credentials. The [Ansible SSM connection documentation](https://docs.ansible.com/projects/ansible/latest/collections/amazon/aws/aws_ssm_connection.html) describes this transfer flow.
 
-**Checkpoint:** I can explain the purpose of each resource and its permission boundary before creating it.
-
-**Workstation troubleshooting:** my WSL terminal became unresponsive during the IAM-policy review. I was advised to try `Ctrl+C`, then use this PowerShell command if the terminal remained unresponsive:
+While I was reviewing the IAM policies, my WSL terminal became unresponsive. The recovery guidance was to try `Ctrl+C` first, then use this PowerShell command if the terminal remained stuck:
 
 ```powershell
 wsl --shutdown
 ```
 
-This was recovery guidance for the local workstation, not an AWS change.
+This stops WSL on my workstation so I can reopen the terminal; it does not change AWS resources.
 
+**Checkpoint:** Before deployment, I had mapped each resource to its role in the design and limited each AWS identity to the permissions it needed.
 ### 1.7 I initialized and validated the Terraform configuration
 
 Before initializing and validating the Terraform configuration, I set the Region to `us-east-1`, selected profile `mds-devsecops-lab`, and reviewed the project variables in [variables.tf](../terraform/variables.tf) and [terraform.tfvars.example](../terraform/terraform.tfvars.example). I ran the checks from `~/mds-aws-linux-hardening-1b` in WSL:
