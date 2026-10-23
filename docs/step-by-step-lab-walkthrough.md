@@ -554,11 +554,78 @@ The 5-GiB disk created by Terraform is a block device, so it needed a filesystem
 
 **Checkpoint:** the separate data volume was mounted at `/srv/sftp-data` before I created the SFTP upload directory.
 
-### 2.4 I opened the admin node and installed the Ansible controller tools
+### 2.4 I opened the admin node and prepared the Ansible controller
 
-Ansible runs tasks against a target from a **controller**. In this lab the controller is the private admin EC2, while WSL remains my Terraform workstation.
+Ansible runs tasks against a target from a **controller**. In this lab the controller was the private admin EC2, while WSL remained my Terraform workstation. I opened the admin node through Session Manager, then checked that I was on the right host before preparing its tools:
 
-I used the private admin node as the Ansible controller, with its instance role providing AWS permissions. The [collection requirements](../ansible/requirements.yml) document the repository's dependencies.
+**Run in WSL:**
+
+```bash
+aws ssm start-session --target i-0d9cc5ae05f797442 \
+  --profile mds-devsecops-lab --region us-east-1
+```
+
+This opened an IAM-authorized shell on the private admin node without requiring inbound SSH. In that admin shell, I confirmed the host and checked which controller tools were available:
+
+```bash
+hostname
+whoami
+python3 --version
+command -v aws
+command -v ansible
+command -v ansible-galaxy
+command -v session-manager-plugin
+```
+
+The admin node's instance role supplied AWS credentials to the controller, so it did not need my WSL browser login or saved IAM access keys. Ansible also needed its AWS Systems Manager connection plugin, the Session Manager plugin, and access to the private transfer bucket. The [Ansible connection requirements](https://docs.ansible.com/projects/ansible/latest/collections/amazon/aws/aws_ssm_connection.html) explain these dependencies.
+
+The exact installation commands from my original admin-node setup were not retained. The following is a repeatable setup sequence for a fresh Ubuntu admin node, based on the tools required by this project; it is not a verbatim transcript of the original installation.
+
+First, install Python's virtual-environment support and the download tools:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3-venv python3-pip curl ca-certificates
+```
+
+I kept Ansible and its Python libraries in a virtual environment so they would not overwrite Ubuntu-managed Python packages:
+
+```bash
+python3 -m venv "$HOME/.venvs/project-1b"
+source "$HOME/.venvs/project-1b/bin/activate"
+python -m pip install --upgrade pip
+python -m pip install ansible-core boto3 botocore
+```
+
+The `amazon.aws.aws_ssm` connection plugin and the other project collections are listed in [requirements.yml](../ansible/requirements.yml). I installed them with:
+
+```bash
+ansible-galaxy collection install amazon.aws ansible.posix community.general
+```
+
+If the AWS CLI is absent, install it for the current admin account using the same AWS v2 installer used on WSL:
+
+```bash
+curl -fsSL https://awscli.amazonaws.com/v2/install.sh | bash
+```
+
+If the Session Manager plugin is absent, install the Ubuntu package and verify it:
+
+```bash
+curl -fL https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb \
+  -o /tmp/session-manager-plugin.deb
+sudo dpkg -i /tmp/session-manager-plugin.deb
+session-manager-plugin --version
+```
+
+I then checked that Ansible and AWS CLI were available in this admin shell:
+
+```bash
+ansible --version
+aws --version
+```
+
+These dependencies let the admin node run Ansible and open the SSM connection to the target. The next step was to put the inventory and connection settings on the controller.
 
 ### 2.5 I configured Ansible to reach the private target
 
