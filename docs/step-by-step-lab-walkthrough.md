@@ -1368,21 +1368,22 @@ The [verification record](verification.md) and [hardening evidence](../evidence/
 
 To finish the demonstration, I closed the SFTP and tunnel sessions and exited the EC2 shells. I then returned to the WSL project directory that held the Terraform configuration and state before removing the running resources.
 
-My first destroy attempt encountered `BucketNotEmpty`. The bucket still contained `sftpdata/sftpdata.pub`. I removed the remaining contents and retried Terraform.
+I returned to the original Terraform working directory so Terraform could use the state that tracked the lab resources, then started the teardown:
 
 ```bash
 cd ~/mds-aws-linux-hardening-1b
 terraform destroy
+```
+
+The first attempt stopped with `BucketNotEmpty` because `sftpdata/sftpdata.pub` was still in the transfer bucket. I removed that object and ran `terraform destroy` again, reviewed the proposed deletions, and confirmed them. Terraform reported `Destroy complete! Resources: 1 destroyed.` That was the final resource left from the earlier partial teardown.
+
+I checked the Terraform state afterward:
+
+```bash
 terraform state list
 ```
 
-I ran the destroy from the original Terraform working directory and reviewed its proposed deletions.
-
-`cd` selects the directory containing the original Terraform state. `terraform destroy` proposes removal of the managed lab resources and asks for confirmation; `terraform state list` checks which resources remain in that state. 
-
-After removing the bucket contents, Terraform reported `Destroy complete! Resources: 1 destroyed.
-
-` That was the last resource from the earlier partial teardown. `terraform state list` was empty afterward.
+It returned no resources, confirming that the state no longer tracked any lab infrastructure.
 
 ### 4.6 I checked AWS service state after Terraform finished
 
