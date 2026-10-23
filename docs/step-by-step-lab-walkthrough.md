@@ -1362,7 +1362,7 @@ ssh-keygen -F '[127.0.0.1]:2222' | ssh-keygen -lf - -E sha256
 | Host monitoring | auditd active, nine watches loaded, harmless test events captured, zero lost events at status check |
 | Maintenance and host settings | AppArmor/service state, update results, persistent sysctls, logs, and failed units inspected |
 
-I kept the [verification record](verification.md) and [hardening evidence](../evidence/hardening-results.md) alongside the code. I also worked through several problems: the wrong WSL PATH, missing CLI profile, host confusion, an auditd unit checked before installation, and pasted commands accidentally joined together. Each taught me to check a prerequisite or the actual source of an output before changing policy.
+The [verification record](verification.md) and [hardening evidence](../evidence/hardening-results.md) preserve the detailed checks alongside the Terraform and Ansible files. Along the way, I fixed a WSL PATH issue, created the missing CLI profile, corrected confusion between the workstation and target, installed auditd before enabling its service, and reran commands that I had accidentally pasted together. These problems reminded me to confirm the machine and prerequisite before changing a security setting. With the results checked, I moved on to removing the temporary AWS infrastructure.
 
 ### 4.5 I removed the temporary files and destroyed the AWS infrastructure
 
