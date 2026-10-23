@@ -552,7 +552,7 @@ SSH listened on local port 22, alongside resolver and time-service sockets. That
 
 Terraform attached a separate encrypted 5-GiB disk to the target. The SFTP data area was mounted at `/srv/sftp-data`, which became the chroot root. A **chroot** gives the SFTP account a restricted filesystem view: inside it, `/` represents this directory. The [target playbook](../ansible/playbooks/harden-target.yml) checks that `/srv/sftp-data` is a mount point and stops if it is missing; the playbook does not format or mount the disk.
 
-I previously added `lsblk`, `mkfs.ext4`, and `/etc/fstab` steps here as a setup recipe. The command record supplied for this lab does not show how I formatted or mounted the volume, so I removed those steps rather than present them as work I had done.
+The exact commands used to format and mount the disk were not captured, so I cannot present a command sequence for that step as part of the original run. The mounted filesystem was in place before I configured the SFTP account.
 
 After the admin controller and inventory were available, I checked the ownership and permissions of the chroot root through Ansible. The captured result was:
 
