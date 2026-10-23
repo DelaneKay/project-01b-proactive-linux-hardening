@@ -50,10 +50,10 @@ The admin and target instances had no public IPs or inbound security-group rules
 
 | Layer | Sequence |
 | --- | --- |
-| 1. AWS infrastructure | Understand automation → prepare WSL → check/install tools → authenticate to AWS → get the project files → inspect AWS → define infrastructure → plan and deploy |
-| 2. Access management and SSH hardening | Confirm SSM connectivity → inspect the target → prepare the Ansible controller and inventory → check the data mount and chroot → create the SFTP identity → stage the public key and configuration → apply and check it |
-| 3. Linux operating system hardening | Check packages and updates → inspect AppArmor → verify the host firewall → load and test audit rules → verify kernel settings → review host health |
-| 4. Validation and cleanup | Verify the server identity → transfer the text file → test denied actions → retain evidence → destroy resources → check the result |
+| [1. AWS infrastructure](#1-aws-infrastructure-layer) | Understand automation → prepare WSL → check/install tools → authenticate to AWS → get the project files → inspect AWS → define infrastructure → plan and deploy |
+| [2. Access management and SSH hardening](#2-access-management--ssh-hardening) | Confirm SSM connectivity → inspect the target → prepare the Ansible controller and inventory → check the data mount and chroot → create the SFTP identity → stage the public key and configuration → apply and check it |
+| [3. Linux operating system hardening](#3-linux-operating-system-hardening) | Check packages and updates → inspect AppArmor → verify the host firewall → load and test audit rules → verify kernel settings → review host health |
+| [4. Validation and cleanup](#4-validation-and-cleanup) | Verify the server identity → transfer the text file → test denied actions → retain evidence → destroy resources → check the result |
 
 **Starting point:** I began on my Windows workstation with Ubuntu in WSL and authorized access to an AWS account for this lab. Each step names the terminal to use. I treated the shell and SFTP prompts as indicators of which terminal I was in, not as text to copy into a command. I worked through one block at a time and fixed errors before moving on.
 
