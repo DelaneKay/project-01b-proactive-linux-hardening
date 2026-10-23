@@ -1340,9 +1340,7 @@ ssh -T -p 2222 -i ~/.ssh/mds-linux-hardening-1b-sftpdata \
   -o IdentitiesOnly=yes sftpdata@127.0.0.1 id
 ```
 
-My response was `This service allows sftp connections only.
-
-`This `ssh` attempt asks to run `id` through the tunnel; the server's SFTP-only response confirms the account cannot start a shell. That was the intended denied-shell result, not an SSH service failure. The account could transfer a file but could not run `id` as a shell command.
+The server responded, `This service allows sftp connections only.` The SSH request was refused as intended: the account could transfer files but could not run `id` as a shell command.
 
 I also compared the saved host-key fingerprint with the one I obtained through SSM: `ssh-keygen -F` retrieves the saved host key for the local tunnel address, and the second command formats it as a SHA-256 fingerprint for comparison with the target's verified fingerprint. 
 
