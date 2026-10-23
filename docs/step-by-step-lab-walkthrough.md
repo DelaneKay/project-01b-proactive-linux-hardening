@@ -882,7 +882,7 @@ ansible -i ~/ansible-project/inventory.ini target \
 
 The result showed `/dev/nvme1n1` mounted as ext4 at `/srv/sftp-data`, with 4.9 GiB total and about 4.6 GiB available. The matching UUID entry used `defaults,nofail`. These identifiers belong to the original lab.
 
-This mount point would also become the **chroot root**: the SFTP account would see it as `/`. Before creating a writable child directory, I checked that the chroot root had the ownership and permissions OpenSSH requires:
+This mount point would also become the **chroot root**: the SFTP account would see it as `/`. A chroot confines the account's filesystem view to this directory, so paths such as the server's real `/etc` are outside the SFTP user's view. That matters here because the account only needs to transfer files; confining it limits access to other parts of the host if its key or session is misused. OpenSSH also requires the chroot root and its parent paths to be owned by root and not writable by the restricted account. I checked those ownership and permission requirements before creating a separate writable child directory:
 
 ```bash
 ansible -i ~/ansible-project/inventory.ini target \
