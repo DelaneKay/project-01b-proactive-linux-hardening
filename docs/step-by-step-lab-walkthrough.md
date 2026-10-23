@@ -1088,9 +1088,7 @@ After enabling UFW, it reported `active`. I opened a fresh target SSM session an
 
 ### 3.4 I verified auditd, then loaded rules before testing events
 
-Auditd records selected security-relevant activity.
-
-`dpkg-query` checks whether auditd is installed; the two `systemctl` checks show whether it starts at boot and is running now. I wanted evidence of changes to identity files, sudo policy, SSH configuration, and firewall configuration. First I checked that the daemon existed and ran:
+Auditd is Linux's audit service: it records configured system activity so I can review security-relevant changes after they happen. For this server, I wanted to watch changes to user and group files, sudo rules, SSH settings, and UFW configuration. Before adding those audit rules, I checked whether the auditd package was installed, whether the service was enabled at startup, and whether it was running now:
 
 ```bash
 dpkg-query -W -f='${Status} ${Version}\n' auditd
