@@ -1144,18 +1144,25 @@ An AWS network boundary controls reachability, while Linux controls what happens
 
 I ran every command in this layer inside the target's SSM session. Whenever I returned to a terminal, I started with `hostname` to confirm which machine I was using; earlier, I had mistaken WSL output for EC2 output.
 
-### 3.1 I checked packages, updates, and reboot requirements
+### 3.1 I checked package updates and reboot status
 
-Hardening does not remove the need to patch. First I wanted to know what was installed and whether pending maintenance would affect later tests: `hostname` confirms I am on the target; `apt list --upgradable` shows available package updates so I can see what maintenance is pending. 
+Keeping the target patched is part of hardening because known software flaws can remain exploitable even after access controls are in place. Earlier in the lab, I used Ansible from the admin node to apply safe package upgrades to the target:
+
+```bash
+ansible-playbook -i ~/ansible-project/inventory.ini \
+  ~/ansible-project/update-packages.yml
+```
+
+The [update playbook](../ansible/playbooks/update-packages.yml) upgraded 12 packages. Ubuntu deferred `cloud-init`, `tmux`, `ubuntu-pro-client`, and `ubuntu-pro-client-l10n` because of phased updates. I left those four for Ubuntu's staged rollout instead of forcing them to install.
+
+Later, during my target-side review, I confirmed which machine I was checking and looked at the updates that remained:
 
 ```bash
 hostname
 apt list --upgradable 2>/dev/null
 ```
 
-I reviewed the available updates and attempted an upgrade. 
-
-Read the proposed package changes before accepting. My run left `cloud-init`, `tmux`, `ubuntu-pro-client`, and `ubuntu-pro-client-l10n` deferred due to phasing. I did not override Ubuntu's phased rollout just to make the list empty.
+The output listed those same four packages, confirming they were still pending after the safe upgrade. I then checked whether the target required a reboot:
 
 ```bash
 if [ -f /var/run/reboot-required ]; then
@@ -1165,7 +1172,9 @@ else
 fi
 ```
 
-**Checkpoint:** I know the package state and reboot requirement. My output said no reboot was required. If yours requests one, complete and verify that maintenance before treating later checks as final.
+My check reported that no reboot was required.
+
+**Checkpoint:** I confirmed the target's identity, the four updates still deferred by Ubuntu, and that no reboot was pending. If your target requests a reboot, complete and verify it before treating later checks as final.
 
 ### 3.2 I checked AppArmor and automatic update scheduling
 
