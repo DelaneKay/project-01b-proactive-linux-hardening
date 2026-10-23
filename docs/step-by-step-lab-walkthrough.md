@@ -550,76 +550,212 @@ SSH listened on local port 22, alongside resolver and time-service sockets. That
 
 ### 2.3 I opened the admin node and prepared the Ansible controller
 
-Ansible runs tasks against a target from a **controller**. In this lab the controller was the private admin EC2, while WSL remained my Terraform workstation. I opened the admin node through Session Manager, then checked that I was on the right host before preparing its tools:
-
-**Run in WSL:**
+Ansible would run on the private admin EC2 and manage the target through SSM. From WSL, I opened the admin node's session:
 
 ```bash
-aws ssm start-session --target i-0d9cc5ae05f797442 \
-  --profile mds-devsecops-lab --region us-east-1
+aws ssm start-session \
+  --target i-0d9cc5ae05f797442 \
+  --profile mds-devsecops-lab \
+  --region us-east-1
 ```
 
-This opened an IAM-authorized shell on the private admin node without requiring inbound SSH. In that admin shell, I confirmed the host and checked which controller tools were available:
+Inside that session, I installed Ansible from Ubuntu's package repository and checked the installed version:
 
 ```bash
-hostname
-whoami
-python3 --version
-command -v aws
-command -v ansible
-command -v ansible-galaxy
+sudo apt install ansible-core
+```
+
+```bash
+ansible --version
+```
+
+The result was Ansible Core `2.16.3` using Python `3.12.3`. I then checked the AWS collection and whether the controller had its own Session Manager plugin. The plugin on WSL could not serve as the admin node's local executable:
+
+```bash
+ansible-galaxy collection list amazon.aws
 command -v session-manager-plugin
 ```
 
-The admin node's instance role supplied AWS credentials to the controller, so it did not need my WSL browser login or saved IAM access keys. Ansible also needed its AWS Systems Manager connection plugin, the Session Manager plugin, and access to the private transfer bucket. The [Ansible connection requirements](https://docs.ansible.com/projects/ansible/latest/collections/amazon/aws/aws_ssm_connection.html) explain these dependencies.
-
-The exact installation commands from my original admin-node setup were not retained. The following is a repeatable setup sequence for a fresh Ubuntu admin node, based on the tools required by this project; it is not a verbatim transcript of the original installation.
-
-First, install Python's virtual-environment support and the download tools:
+The collection was `amazon.aws 7.2.0`; the plugin-path check returned nothing. I attempted to download AWS's Ubuntu plugin package on the admin node:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y python3-venv python3-pip curl ca-certificates
-```
-
-For a fresh controller, a virtual environment keeps Ansible and its Python libraries separate from Ubuntu-managed Python packages:
-
-```bash
-python3 -m venv "$HOME/.venvs/project-1b"
-source "$HOME/.venvs/project-1b/bin/activate"
-python -m pip install --upgrade pip
-python -m pip install ansible-core boto3 botocore
-```
-
-The `amazon.aws.aws_ssm` connection plugin and the other project collections are listed in [requirements.yml](../ansible/requirements.yml). The repeatable installation command is:
-
-```bash
-ansible-galaxy collection install amazon.aws ansible.posix community.general
-```
-
-If the AWS CLI is absent, install it for the current admin account using the same AWS v2 installer used on WSL:
-
-```bash
-curl -fsSL https://awscli.amazonaws.com/v2/install.sh | bash
-```
-
-If the Session Manager plugin is absent, install the Ubuntu package and verify it:
-
-```bash
-curl -fL https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb \
+curl -fL --connect-timeout 10 --max-time 60 \
+  https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb \
   -o /tmp/session-manager-plugin.deb
+```
+
+The download returned `403 Forbidden`. The S3 endpoint policy allowed the lab transfer bucket but omitted AWS's plugin-download bucket. I returned to the Terraform directory in WSL and inspected the endpoint configuration:
+
+```bash
+grep -n -A70 'resource "aws_vpc_endpoint" "s3"' network.tf
+```
+
+I edited [network.tf](../terraform/network.tf) to retain the transfer-bucket permissions and add read access to the package and its signature. I opened the file with:
+
+```bash
+nano network.tf
+```
+
+The endpoint block became:
+
+```hcl
+resource "aws_vpc_endpoint" "s3" {
+  vpc_id            = aws_vpc.lab.id
+  service_name      = "com.amazonaws.${var.aws_region}.s3"
+  vpc_endpoint_type = "Gateway"
+
+  route_table_ids = [
+    aws_route_table.admin_private.id,
+    aws_route_table.target_private.id
+  ]
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Principal = "*"
+        Action = [
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ]
+        Resource = aws_s3_bucket.ansible_transfer.arn
+      },
+      {
+        Effect    = "Allow"
+        Principal = "*"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = "${aws_s3_bucket.ansible_transfer.arn}/*"
+      },
+      {
+        Effect    = "Allow"
+        Principal = "*"
+        Action    = "s3:GetObject"
+        Resource = [
+          "arn:aws:s3:::session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb",
+          "arn:aws:s3:::session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb.sig"
+        ]
+      }
+    ]
+  })
+
+  tags = merge(var.common_tags, {
+    Name = "${var.project_name}-s3-endpoint"
+  })
+}
+```
+
+Still in WSL, I formatted and validated the configuration, then reviewed the proposed change:
+
+```bash
+terraform fmt network.tf
+```
+
+```bash
+terraform validate
+```
+
+```bash
+terraform plan
+```
+
+The plan showed `0 to add, 1 to change, 0 to destroy`: an in-place endpoint-policy update. I applied it:
+
+```bash
+terraform apply
+```
+
+A retry from WSL timed out; the endpoint change applied to the EC2 network, so I reopened the admin node's SSM session and repeated the download there. It succeeded. I then downloaded its signature and checked that GPG was available:
+
+```bash
+curl -fL --connect-timeout 10 --max-time 60 -o /tmp/session-manager-plugin.deb.sig https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb.sig
+```
+
+```bash
+gpg --version | head -n 1
+```
+
+GPG reported `2.4.4`. My first signing-key paste failed with a CRC error, and the two key-server attempts found no key. I resolved this by importing the public signing key directly from AWS's documentation:
+
+```bash
+curl -fsSL https://docs.aws.amazon.com/systems-manager/latest/userguide/install-plugin-linux-verify-signature.md | sed -n '/-----BEGIN PGP PUBLIC KEY BLOCK-----/,/-----END PGP PUBLIC KEY BLOCK-----/p' | sed -E 's/^[[:space:]]+//' | gpg --import
+```
+
+Before trusting that key, I compared its full fingerprint with the AWS-published value:
+
+```bash
+gpg --fingerprint 2C4D4AFF6F6757EE
+```
+
+The fingerprint matched `7959 6371 24CE 093A D501 D47A 2C4D 4AFF 6F67 57EE`. I then verified the downloaded package's digital signature:
+
+```bash
+gpg --verify /tmp/session-manager-plugin.deb.sig /tmp/session-manager-plugin.deb
+```
+
+GPG returned `Good signature`. This checked that the package matched the signature made with AWS's signing key, providing authenticity and integrity checks before I installed executable software. I installed the verified package and checked its version:
+
+```bash
 sudo dpkg -i /tmp/session-manager-plugin.deb
 session-manager-plugin --version
 ```
 
-On a fresh controller, these commands check that Ansible and AWS CLI are available:
+The installed version was `1.2.896.0`. Next, I checked whether Ansible could find its SSM connection plugin:
 
 ```bash
-ansible --version
-aws --version
+ansible-doc -t connection amazon.aws.aws_ssm
 ```
 
-These dependencies let the admin node run Ansible and open the SSM connection to the target. The next step was to put the inventory and connection settings on the controller.
+That check exposed a collection-version mismatch: the installed `amazon.aws 7.2.0` did not provide that connection plugin. I tried the compatible `community.aws` collection:
+
+```bash
+ansible-galaxy collection install community.aws:==9.3.0
+```
+
+The Galaxy download returned `403`, so I installed the stable-9 collections from their official GitHub repositories:
+
+```bash
+ansible-galaxy collection install 'git+https://github.com/ansible-collections/community.aws.git,stable-9'
+ansible-galaxy collection install 'git+https://github.com/ansible-collections/amazon.aws.git,stable-9'
+```
+
+I checked each collection separately and opened the connection plugin's documentation:
+
+```bash
+ansible-galaxy collection list amazon.aws
+ansible-galaxy collection list community.aws
+ansible-doc -t connection community.aws.aws_ssm
+```
+
+The user-installed versions were `amazon.aws 9.5.2` and `community.aws 9.3.0`. The documentation resolved to `community.aws.aws_ssm`, which is the connection name I used in the inventory.
+
+Finally, I checked the Python AWS libraries and plugin path on the admin node:
+
+```bash
+python3 -c 'import boto3, botocore; print("boto3", boto3.__version__); print("botocore", botocore.__version__)'
+command -v session-manager-plugin
+command -v curl
+```
+
+Both Python libraries reported `1.34.46`, and the Session Manager plugin resolved to `/usr/local/bin/session-manager-plugin`. The final curl-path check printed nothing, although the earlier package download had succeeded. I did not treat that output as proof that the target lacked curl.
+
+The connection also needed curl on the target for S3 transfers. From WSL, I opened the target session:
+
+```bash
+aws ssm start-session --target i-0cce45e09ec35a12a --profile mds-devsecops-lab --region us-east-1
+```
+
+Inside the target session, I checked:
+
+```bash
+command -v curl
+```
+
+It returned `/usr/bin/curl`. With the controller tools and target dependency checked, I returned to the admin node to configure the inventory.
 
 ### 2.4 I configured Ansible to reach the private target
 
@@ -768,6 +904,8 @@ These Ansible shell tasks only queried the target. Their `CHANGED` label was the
 
 I used Ansible ad-hoc commands from the admin node to prepare the target account before applying the full SSH configuration. The `-i` option points to the admin node’s inventory, `target` selects the managed host, `-b` enables privilege escalation, and `-m` selects the Ansible module.
 
+My first group-creation attempt ran in WSL, where the inventory path resolved to `/home/devsecops/ansible-project/inventory.ini`. Ansible could not find it, skipped the target, and made no changes. I returned to the admin node's SSM session, where the inventory was under `/home/ssm-user/ansible-project/`.
+
 After the Ansible checks showed the group, account, and upload directory were absent, I created the dedicated group from the admin node's SSM shell:
 
 ```bash
@@ -810,54 +948,343 @@ else
 fi
 ```
 
-I generated the key pair on WSL and kept the private key there. The public key was staged for the controller to install on the target.
+Still in WSL, I displayed the public key's fingerprint so I could compare it after transfer:
 
-### 2.8 I reviewed the account, filesystem, and SSH policy before applying it
-
-The transfer user's job is to move files. It does not need `sudo`, an interactive shell, forwarding, or permission to change the host. I chose a user named `sftpdata` in group `sftp-only`, with a locked password and `/usr/sbin/nologin` shell. The [target playbook](../ansible/playbooks/harden-target.yml) declares those settings and installs the public key staged above.
-
-I also separated the root of the restricted filesystem from the writable folder:
-
-| Path on the target | Owner and mode | Purpose |
-| --- | --- | --- |
-| `/srv/sftp-data` | `root:root`, `0755` | Chroot boundary; the transfer account cannot modify it |
-| `/srv/sftp-data/upload` | `sftpdata:sftp-only`, `0750` | Writable transfer directory |
-| `/home/sftpdata/.ssh` | `sftpdata:sftp-only`, `0700` | Private account key directory |
-| `/home/sftpdata/.ssh/authorized_keys` | `sftpdata:sftp-only`, `0600` | Public keys accepted for this account |
-
-OpenSSH requires the chroot path to be root-owned and not writable by group or others. Giving the transfer user ownership of the chroot root would break that requirement. The writable directory goes inside it.
-
-This is the SSH drop-in content represented in the playbook, shown here for review before running it:
-
-```text
-PermitRootLogin no
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-PubkeyAuthentication yes
-X11Forwarding no
-Match Group sftp-only
-    ChrootDirectory /srv/sftp-data
-    ForceCommand internal-sftp -d /upload
-    AllowTcpForwarding no
-    PermitTunnel no
-    PermitTTY no
-    X11Forwarding no
-Match all
+```bash
+ssh-keygen -lf "$HOME/.ssh/mds-linux-hardening-1b-sftpdata.pub"
 ```
 
-`PermitRootLogin no` blocks root SSH login. Password and keyboard-interactive authentication are disabled, while public keys remain enabled. `Match Group sftp-only` applies the restricted policy to the transfer group; `ForceCommand internal-sftp -d /upload` forces SFTP and sets its starting directory. TTY and forwarding restrictions reduce extra capabilities. The client will see `/upload`, which maps to `/srv/sftp-data/upload` on the host.
+I uploaded only the public key to the private transfer bucket, requesting S3-managed encryption:
 
-### 2.9 I applied the access configuration with Ansible
+```bash
+aws s3 cp \
+  "$HOME/.ssh/mds-linux-hardening-1b-sftpdata.pub" \
+  "s3://mds-linux-hardening-1b-273517699789-us-east-1/sftpdata/sftpdata.pub" \
+  --sse AES256 \
+  --profile mds-devsecops-lab \
+  --region us-east-1
+```
 
-I used Ansible for the access configuration. The repository's [target playbook](../ansible/playbooks/harden-target.yml) expresses the target configuration; 
+Back in the admin node's SSM session, I used Python's AWS SDK and the instance role to download the public key and display its fingerprint. This did not require AWS CLI on the admin node:
 
-In particular, I installed auditd, enabled UFW, and corrected network sysctls manually during the subsequent checks. I describe those actions in Layer 3 rather than claim that the earlier Ansible run had already done them.
+```bash
+python3 -c 'import boto3; boto3.client("s3", region_name="us-east-1").download_file("mds-linux-hardening-1b-273517699789-us-east-1", "sftpdata/sftpdata.pub", "/tmp/sftpdata.pub"); print("Downloaded public key to /tmp/sftpdata.pub")' \
+  && ssh-keygen -lf /tmp/sftpdata.pub
+```
 
-### 2.10 I verified the access restrictions through SFTP
+I then installed the staged public key for `sftpdata` through Ansible. The module managed the target's key file and its parent directory:
 
-I checked the restrictions with the transfer and denied-action tests documented in Layer 4. The captured evidence includes a refused write at the chroot root and the response `This service allows sftp connections only.
+```bash
+pubkey=$(cat /tmp/sftpdata.pub) &&
+ansible -i /home/ssm-user/ansible-project/inventory.ini target \
+  -b -m ansible.posix.authorized_key \
+  -a "user=sftpdata key='$pubkey' state=present path=/home/sftpdata/.ssh/authorized_keys manage_dir=true"
+```
 
-` when I tried to execute a shell command. Those results provide direct evidence of the access boundary.
+The private key remained on WSL throughout.
+
+### 2.8 I checked the chroot permissions and installed public key
+
+Before changing SSH access, I checked the target's chroot path, home directory, and key-file permissions from the admin node's SSM session:
+
+```bash
+ansible -i /home/ssm-user/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.shell \
+  -a 'stat -c "%U:%G %a %n" / /srv /srv/sftp-data /home/sftpdata /home/sftpdata/.ssh /home/sftpdata/.ssh/authorized_keys; echo "--- installed key fingerprint ---"; ssh-keygen -lf /home/sftpdata/.ssh/authorized_keys'
+```
+
+The chroot path passed the ownership check. OpenSSH requires the chroot directory and its parents to be root-owned and not writable by the restricted user. That is why `/srv/sftp-data` remained `root:root 0755`, while `/srv/sftp-data/upload` belonged to `sftpdata:sftp-only` with mode `0750`.
+
+The output did not show the installed key's fingerprint, so I could not yet conclude that the correct key had arrived. I compared the staged and installed files by size and fingerprint:
+
+```bash
+echo "--- Admin staged key ---"
+wc -c /tmp/sftpdata.pub
+ssh-keygen -lf /tmp/sftpdata.pub
+echo "--- Target authorized key ---"
+ansible -i /home/ssm-user/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.shell \
+  -a 'wc -c /home/sftpdata/.ssh/authorized_keys; ssh-keygen -lf /home/sftpdata/.ssh/authorized_keys'
+```
+
+The target file was 113 bytes, but the returned output still did not establish a matching fingerprint. I followed up with a SHA-256 comparison:
+
+```bash
+echo "--- staged public key hash ---"
+sha256sum /tmp/sftpdata.pub
+echo "--- target authorized_keys hash ---"
+ansible -i /home/ssm-user/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.command \
+  -a 'sha256sum /home/sftpdata/.ssh/authorized_keys'
+```
+
+These checks were intended to verify the public key's integrity between the controller and target. I did not have a confirmed matching-hash result from this check. I therefore included key validation and an explicit fingerprint assertion in the combined playbook, so SSH configuration would not proceed with an unverified key.
+
+### 2.9 I applied and verified the SSH restrictions with one Ansible playbook
+
+I brought the account, directory permissions, public key, and SSH settings into `configure-sftp.yml` on the admin node. The playbook first validates the staged key and checks the mounted volume's UUID. It then installs the key and asserts that its fingerprint matches before applying SSH restrictions.
+
+The global settings go in `/etc/ssh/sshd_config.d/00-project-hardening.conf`. The SFTP group's `Match` block goes at the end of `/etc/ssh/sshd_config`. This keeps the group-specific context from affecting directives that follow Ubuntu's earlier include statement.
+
+I created the playbook in the admin node's SSM session:
+
+```bash
+mkdir -p ~/ansible-project
+
+cat > ~/ansible-project/configure-sftp.yml <<'EOF'
+---
+- name: Configure target SSH and restricted SFTP
+  hosts: target
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Validate the staged public key on the admin node
+      ansible.builtin.command:
+        argv:
+          - ssh-keygen
+          - -lf
+          - /tmp/sftpdata.pub
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: staged_key
+
+    - name: Check the mounted data volume
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - -rn
+          - -M
+          - /srv/sftp-data
+          - -o
+          - UUID
+      changed_when: false
+      register: data_mount
+
+    - name: Require the correct data volume before proceeding
+      ansible.builtin.assert:
+        that:
+          - data_mount.stdout | trim == '440e974b-49b2-4f0c-8675-28cb69d6bbe4'
+        fail_msg: "The expected data volume is not mounted. Stop and inspect it."
+
+    - name: Ensure SFTP group exists
+      ansible.builtin.group:
+        name: sftp-only
+        state: present
+
+    - name: Ensure restricted SFTP account exists
+      ansible.builtin.user:
+        name: sftpdata
+        group: sftp-only
+        home: /home/sftpdata
+        shell: /usr/sbin/nologin
+        password_lock: true
+        create_home: true
+
+    - name: Set SFTP directory ownership and permissions
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: /srv/sftp-data, owner: root, group: root, mode: '0755' }
+        - { path: /srv/sftp-data/upload, owner: sftpdata, group: sftp-only, mode: '0750' }
+        - { path: /home/sftpdata, owner: sftpdata, group: sftp-only, mode: '0750' }
+
+    - name: Install the public key from the admin node
+      ansible.posix.authorized_key:
+        user: sftpdata
+        state: present
+        key: "{{ lookup('ansible.builtin.file', '/tmp/sftpdata.pub') }}"
+
+    - name: Verify the installed key fingerprint
+      ansible.builtin.command:
+        argv:
+          - ssh-keygen
+          - -lf
+          - /home/sftpdata/.ssh/authorized_keys
+      changed_when: false
+      register: installed_keys
+
+    - name: Confirm the expected key is installed
+      ansible.builtin.assert:
+        that:
+          - staged_key.stdout.split()[1] in installed_keys.stdout
+
+    - name: Ensure SSH runtime directory exists
+      ansible.builtin.file:
+        path: /run/sshd
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Install global SSH restrictions
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/00-project-hardening.conf
+        owner: root
+        group: root
+        mode: '0644'
+        validate: /usr/sbin/sshd -t -f %s
+        content: |
+          PermitRootLogin no
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+          X11Forwarding no
+          AllowTcpForwarding no
+          AllowAgentForwarding no
+          PermitTunnel no
+      notify: Restart SSH
+
+    - name: Restrict the SFTP group to its upload area
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: "# {mark} MANAGED LAB SFTP"
+        insertafter: EOF
+        validate: /usr/sbin/sshd -t -f %s
+        block: |
+          Match Group sftp-only
+              ChrootDirectory /srv/sftp-data
+              ForceCommand internal-sftp -d /upload
+              PasswordAuthentication no
+              KbdInteractiveAuthentication no
+              AllowTcpForwarding no
+              AllowAgentForwarding no
+              X11Forwarding no
+              PermitTTY no
+          Match all
+      notify: Restart SSH
+
+    - name: Validate complete SSH configuration
+      ansible.builtin.command: /usr/sbin/sshd -t
+      changed_when: false
+
+    - name: Read effective SFTP account settings
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/sshd
+          - -T
+          - -C
+          - user=sftpdata,host=localhost,addr=127.0.0.1
+      changed_when: false
+      register: ssh_effective
+
+    - name: Verify required restrictions are effective
+      ansible.builtin.assert:
+        that:
+          - item in ssh_effective.stdout_lines
+      loop:
+        - permitrootlogin no
+        - passwordauthentication no
+        - kbdinteractiveauthentication no
+        - pubkeyauthentication yes
+        - x11forwarding no
+        - allowtcpforwarding no
+        - allowagentforwarding no
+        - permittunnel no
+        - permittty no
+        - chrootdirectory /srv/sftp-data
+        - forcecommand internal-sftp -d /upload
+
+    - name: Ensure SSH socket is enabled and running
+      ansible.builtin.systemd_service:
+        name: ssh.socket
+        enabled: true
+        state: started
+
+    - name: Apply validated SSH changes
+      ansible.builtin.meta: flush_handlers
+
+  handlers:
+    - name: Restart SSH
+      ansible.builtin.systemd_service:
+        name: ssh.service
+        state: restarted
+EOF
+```
+
+The account receives file-transfer access inside its chroot, with `/upload` as its starting directory. Root SSH login, password authentication, and unnecessary forwarding are disabled. The playbook validates the SSH configuration and checks the effective settings for `sftpdata` before its handler restarts SSH.
+
+Still on the admin node, I checked the playbook's syntax and then ran it:
+
+```bash
+ansible-playbook -i ~/ansible-project/inventory.ini \
+  ~/ansible-project/configure-sftp.yml --syntax-check &&
+ansible-playbook -i ~/ansible-project/inventory.ini \
+  ~/ansible-project/configure-sftp.yml
+```
+
+The first run stopped at the task delegated to the controller. Ansible tried to create temporary files under `/root/.ansible/tmp`, which `ssm-user` could not write to. The recap was `ok=0 changed=0 unreachable=1 failed=0`; the target had not been changed.
+
+I created a private temporary directory for `ssm-user` and selected it for Ansible's local and remote temporary files in that session:
+
+```bash
+mkdir -p /home/ssm-user/.ansible/tmp
+chmod 700 /home/ssm-user/.ansible/tmp
+
+export ANSIBLE_LOCAL_TEMP=/home/ssm-user/.ansible/tmp
+export ANSIBLE_REMOTE_TEMP=/home/ssm-user/.ansible/tmp
+```
+
+I then reran the same playbook using the full inventory and playbook paths:
+
+```bash
+ansible-playbook \
+  -i /home/ssm-user/ansible-project/inventory.ini \
+  /home/ssm-user/ansible-project/configure-sftp.yml
+```
+
+The run completed with `ok=17 changed=3 unreachable=0 failed=0`. The key-fingerprint assertion, volume check, and effective SSH restrictions passed, and SSH restarted successfully. This verified the access configuration before I tested it as the SFTP user.
+
+The auditd, UFW, and network-sysctl changes came later during the operating-system checks in Layer 3.
+
+### 2.10 I tested SFTP access through the SSM tunnel
+
+After the playbook passed, I returned to WSL to test the actual access path. I opened a tunnel from local port `2222` to the target's SSH port `22` and left that terminal running:
+
+```bash
+aws ssm start-session \
+  --target i-0cce45e09ec35a12a \
+  --document-name AWS-StartPortForwardingSession \
+  --parameters '{"portNumber":["22"],"localPortNumber":["2222"]}' \
+  --profile mds-devsecops-lab \
+  --region us-east-1
+```
+
+In a second WSL terminal, I connected as `sftpdata` with the dedicated private key:
+
+```bash
+sftp -P 2222 \
+  -i "$HOME/.ssh/mds-linux-hardening-1b-sftpdata" \
+  -o IdentitiesOnly=yes \
+  sftpdata@127.0.0.1
+```
+
+Authentication succeeded and the client displayed its `sftp>` prompt. I checked the starting directory and whether the account could navigate outside the chroot:
+
+```text
+pwd
+ls -ld /
+ls -ld /upload
+cd /
+cd ..
+pwd
+ls /etc
+```
+
+The client did not support the `-d` option in the two listing commands, so I corrected the listing at the SFTP prompt:
+
+```text
+ls -l /
+```
+
+The account started in `/upload`. Moving up from `/` kept it at the chroot root, and `/etc` was unavailable. These results showed that the account's filesystem view was restricted.
+
+I had accepted the server's host key before independently comparing its fingerprint; that comparison was completed later. Layer 4 covers the host-key comparison, upload/download integrity check, denied write at the chroot root, and refused shell command.
 
 ## 3. Linux operating system hardening
 
