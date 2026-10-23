@@ -695,7 +695,7 @@ The plan showed `0 to add, 1 to change, 0 to destroy`: an in-place endpoint-poli
 terraform apply
 ```
 
-A retry from WSL timed out; the endpoint change applied to the EC2 network, so I reopened the admin node's SSM session and repeated the download there. It succeeded. I then downloaded its signature and checked that GPG was available:
+The endpoint policy controls S3 traffic from the lab's VPC, not from my local WSL network, so retrying the download from WSL timed out. I reopened the admin node's SSM session and downloaded the package there successfully. Before installing executable software, I also downloaded AWS's signature file. GPG (GNU Privacy Guard) is a tool that verifies digital signatures; I used it with AWS's public signing key to check that the package was signed by AWS and had not been altered. I first checked that GPG was available:
 
 ```bash
 curl -fL --connect-timeout 10 --max-time 60 -o /tmp/session-manager-plugin.deb.sig https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb.sig
