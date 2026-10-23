@@ -1294,11 +1294,9 @@ The guest reported attempted buffer clearing, no microcode, and unknown SMT host
 
 ### 4.1 I obtained the server fingerprint before trusting the SFTP connection
 
-The client key proves my transfer user's identity to the server.
+Before transferring the test file, I verified the server's identity over the SSM session I had already established. The **client key** I configured earlier authenticates the SFTP user to the server; the server's **host key** lets the client confirm it has reached the intended server. Checking the host-key fingerprint through SSM gave me a trusted value to compare with the fingerprint presented over the SFTP tunnel.
 
-`ssh-keygen` prints the target's public host-key fingerprint so I can verify the server before trusting the SFTP connection. The server's **host key** lets my client verify which server it reached. I checked the host fingerprint over the existing SSM management channel first.
-
-I checked the target's SSH host-key fingerprint from its SSM session:
+I used `ssh-keygen` to print the target's public host-key fingerprint:
 
 ```bash
 sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
