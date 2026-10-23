@@ -22,6 +22,8 @@ The solution separated management from workload access:
 
 [View the editable draw.io diagram](docs/aws-infrastructure.drawio).
 
+**Diagram legend:** Blue arrows show SSM management sessions, including port forwarding. Black arrows show internet egress through the NAT Gateway and Internet Gateway. Orange outlines mark the EC2 security-group boundaries inside the private subnets.
+
 ```text
 Workstation (Terraform + AWS CLI)
         |
