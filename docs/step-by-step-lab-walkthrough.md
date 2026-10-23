@@ -453,9 +453,7 @@ aws iam get-policy-version \
   --profile mds-devsecops-lab
 ```
 
-The compact query exposed parameter-read, patching, inventory, compliance, and legacy messaging permissions beyond the Session Manager channels I needed. That review led to the narrower five-action agent policy below.
-
-Before deployment, I also reviewed the instance permissions. My human AWS account could provision resources; the servers did not need that privilege. Both agents needed these five SSM actions:
+The managed policy included parameter-read, patching, inventory, compliance, and legacy messaging permissions that this lab did not need. I used it as a reference and kept the instance roles to the five SSM channel actions required for Session Manager. My AWS user handled provisioning; the EC2 instances did not need those permissions. I attached these five actions to both instance roles:
 
 ```json
 {
