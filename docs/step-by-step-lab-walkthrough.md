@@ -1178,9 +1178,9 @@ My check reported that no reboot was required.
 
 ### 3.2 I checked AppArmor and automatic update scheduling
 
-AppArmor adds process-specific restrictions beyond ordinary file ownership.
+AppArmor is Ubuntu's application security system. It uses profiles to restrict what a program can access, such as files, capabilities, and system resources, adding a boundary beyond ordinary Linux ownership and permissions. In this lab, the target runs management and SFTP services; confinement can limit what a process may do if it is misconfigured or compromised. It complements the SFTP chroot and file permissions, which restrict the transfer account's view and write access.
 
-I checked both whether AppArmor starts at boot and whether it was running, then inspected its loaded and enforcing profiles. A running service alone does not show which processes are actually confined.
+I checked whether AppArmor starts at boot and was running, then inspected which profiles were loaded and enforcing. A running service alone does not show which programs are actually confined.
 
 ```bash
 systemctl is-enabled apparmor
