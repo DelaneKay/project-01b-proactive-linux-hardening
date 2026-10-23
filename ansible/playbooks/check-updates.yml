@@ -1,0 +1,19 @@
+---
+- name: Inspect available package upgrades
+  hosts: target
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: List available package upgrades
+      ansible.builtin.command:
+        argv:
+          - apt
+          - list
+          - --upgradable
+      register: apt_upgrades
+      changed_when: false
+
+    - name: Show available package upgrades
+      ansible.builtin.debug:
+        var: apt_upgrades.stdout_lines
