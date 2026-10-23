@@ -1,0 +1,31 @@
+---
+- name: Read-only SSH and TCP listener audit
+  hosts: target
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Check whether SSH is active
+      ansible.builtin.command: systemctl is-active ssh
+      register: ssh_active
+      changed_when: false
+      failed_when: false
+
+    - name: Check whether SSH is enabled at boot
+      ansible.builtin.command: systemctl is-enabled ssh
+      register: ssh_enabled
+      changed_when: false
+      failed_when: false
+
+    - name: List listening TCP sockets
+      ansible.builtin.command: ss -lntp
+      register: tcp_listeners
+      changed_when: false
+
+    - name: Display SSH and listener results
+      ansible.builtin.debug:
+        msg:
+          - "SSH active: {{ ssh_active.stdout | default('unknown') }}"
+          - "SSH enabled: {{ ssh_enabled.stdout | default('unknown') }}"
+          - "TCP listeners:"
+          - "{{ tcp_listeners.stdout_lines }}"
