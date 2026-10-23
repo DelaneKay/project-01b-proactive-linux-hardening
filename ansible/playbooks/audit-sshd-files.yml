@@ -1,0 +1,19 @@
+---
+- name: Read SSH server configuration
+  hosts: target
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Find relevant SSH configuration directives
+      ansible.builtin.shell: |
+        grep -RniE '^[[:space:]]*(Include|Port|ListenAddress|PasswordAuthentication|PubkeyAuthentication|PermitRootLogin|AllowTcpForwarding|X11Forwarding|PermitTTY|UsePAM|Subsystem|Match|ForceCommand|ChrootDirectory)' \
+          /etc/ssh/sshd_config /etc/ssh/sshd_config.d 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      register: ssh_config_lines
+      changed_when: false
+
+    - name: Display SSH configuration directives
+      ansible.builtin.debug:
+        var: ssh_config_lines.stdout_lines
