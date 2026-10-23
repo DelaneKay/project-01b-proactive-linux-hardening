@@ -512,11 +512,37 @@ The admin node ID was `i-0d9cc5ae05f797442`, and the SFTP target ID was `i-0cce4
 
 ### 2.1 I checked Session Manager prerequisites before opening a session
 
-AWS resources existing does not mean I can manage them yet. Session Manager needs an agent on the instance, suitable IAM permissions and outbound connectivity, and a client plugin on my workstation.
+The EC2 instances were private, so I first checked whether Systems Manager could see them before trying to open a shell. In WSL, I queried the managed-instance list:
 
-Both nodes needed a working SSM Agent, instance permissions, and outbound connectivity. I used SSM to reach the private instances without opening public SSH access.
+```bash
+aws ssm describe-instance-information \
+  --profile mds-devsecops-lab \
+  --region us-east-1 \
+  --query 'InstanceInformationList[].{InstanceId:InstanceId,PingStatus:PingStatus,Platform:PlatformName,Version:AgentVersion}' \
+  --output table
+```
 
-**Checkpoint:** I could open an SSM session to the target without public SSH access.
+Both Ubuntu instances appeared as `Online` with SSM Agent version `3.3.4793.0`. That confirmed their agents were connected to Systems Manager. The instance roles and private-subnet egress were part of the Terraform design that enabled this connection.
+
+I then tried to open a session to the admin node from WSL:
+
+```bash
+aws ssm start-session \
+  --target i-0d9cc5ae05f797442 \
+  --profile mds-devsecops-lab \
+  --region us-east-1
+```
+
+The first attempt returned `SessionManagerPlugin is not found`. The AWS CLI needed the Session Manager plugin installed locally in WSL to open the interactive session. I downloaded and installed AWS's Ubuntu package, then checked that the plugin was available:
+
+```bash
+curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
+  -o /tmp/session-manager-plugin.deb
+sudo dpkg -i /tmp/session-manager-plugin.deb
+session-manager-plugin --version
+```
+
+I retried the same `aws ssm start-session` command. Session Manager returned a session ID, and `hostname` inside the session returned `ip-10-20-10-92`, confirming I had reached the admin node. I used the same access method for the target in the next step. This let me manage the private instances without a public IP or inbound SSH rule.
 
 ### 2.2 I opened a target session and captured its starting state
 
