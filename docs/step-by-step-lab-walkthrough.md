@@ -1105,11 +1105,16 @@ systemctl is-enabled auditd
 systemctl is-active auditd
 ```
 
-This ordering mattered in my lab: I initially tried to enable `auditd.service` before the package was installed, and the unit did not exist.
+My first attempt to enable `auditd` failed because I had not installed the package, so the `auditd.service` unit did not exist. I installed the daemon and its plugins, then enabled and started the service in one step:
 
-`apt install` adds the audit daemon and plugins; `enable --now` configures startup and starts the service immediately. The last two checks verify both states. Once installation completed, the service reported `enabled` and `active`.
+```bash
+sudo apt install auditd audispd-plugins
+sudo systemctl enable --now auditd
+systemctl is-enabled auditd
+systemctl is-active auditd
+```
 
-Only then did I inspect the audit subsystem and rules: `auditctl -s` reports whether auditing is enabled and whether events are being lost; `auditctl -l` lists the rules currently active in the kernel. 
+The install command added the audit service and plugins. `enable --now` set the service to start at boot and started it immediately; the final checks confirmed it was `enabled` and `active`. With auditd running, I checked the audit subsystem's status and the rules currently loaded in the kernel. `auditctl -s` reports whether auditing is enabled and whether events have been lost, while `auditctl -l` lists the active rules: 
 
 ```bash
 sudo auditctl -s
