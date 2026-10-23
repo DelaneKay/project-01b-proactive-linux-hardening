@@ -1331,11 +1331,9 @@ The target-side destination was `/srv/sftp-data/upload/mds-sftp-test.txt`. Insid
 
 ### 4.3 I tested actions the transfer account should be denied
 
-A successful upload proves usability. It does not prove the user is restricted, so I also tested the boundaries.
+The successful transfer showed that the account could use SFTP. I then tested its restrictions: during the SFTP session, an attempt to upload `/mds-write-denied-test.txt` failed with `Permission denied`. The account could write inside `/upload`, but not at the chroot root.
 
-The captured SFTP output refused opening `/mds-write-denied-test.txt` with `Permission denied`. That demonstrates the transfer account could not write at the chroot root. 
-
-**Back in the WSL shell, with the SSM tunnel still open:**
+To check that the account could not start a shell, I returned to WSL and used the still-open SSM tunnel to ask SSH to run `id`:
 
 ```bash
 ssh -T -p 2222 -i ~/.ssh/mds-linux-hardening-1b-sftpdata \
