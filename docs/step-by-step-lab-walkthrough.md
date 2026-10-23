@@ -550,7 +550,7 @@ SSH listened on local port 22, alongside resolver and time-service sockets. That
 
 ### 2.3 I prepared the dedicated data filesystem before configuring the chroot
 
-The 5-GiB disk created by Terraform is a block device, so it needed a filesystem mounted before SFTP could use it. I chose `/srv/sftp-data` as the mount point and future chroot root. A **chroot** gives the SFTP account a restricted filesystem view: inside it, `/` represents this directory. The target playbook later checks that `/srv/sftp-data` is a mount point and stops if it is not; the playbook does not format or mount the disk.
+The 5-GiB disk created by Terraform is a block device, so it needed a filesystem mounted before SFTP could use it. I chose `/srv/sftp-data` as the mount point and future chroot root. A **chroot** gives the SFTP account a restricted filesystem view: inside it, `/` represents this directory. The [target playbook](../ansible/playbooks/harden-target.yml) later checks that `/srv/sftp-data` is a mount point and stops if it is not; the playbook does not format or mount the disk.
 
 **Checkpoint:** the separate data volume was mounted at `/srv/sftp-data` before I created the SFTP upload directory.
 
@@ -575,8 +575,8 @@ The group creation returned `target | CHANGED` and created `sftp-only` with GID 
 I then created `sftpdata` as a non-interactive account, set `sftp-only` as its primary group, created its home directory, and locked its password:
 
 ```bash
-ansible -i /home/ssm-user/ansible-project/inventory.ini target \\
-  -b -m ansible.builtin.user \\
+ansible -i /home/ssm-user/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.user \
   -a 'name=sftpdata group=sftp-only shell=/usr/sbin/nologin create_home=yes password_lock=true state=present'
 ```
 
@@ -585,8 +585,8 @@ Ansible returned `CHANGED`; the account had UID `1002`, primary group GID `1002`
 Next, I created the writable upload directory inside the chroot and set its owner, group, and mode:
 
 ```bash
-ansible -i /home/ssm-user/ansible-project/inventory.ini target \\
-  -b -m ansible.builtin.file \\
+ansible -i /home/ssm-user/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.file \
   -a 'path=/srv/sftp-data/upload state=directory owner=sftpdata group=sftp-only mode=0750'
 ```
 
@@ -601,7 +601,7 @@ key="$HOME/.ssh/mds-linux-hardening-1b-sftpdata"
 if [ -e "$key" ] || [ -e "$key.pub" ]; then
   echo "Key file already exists; stopping to avoid overwriting it."
 else
-  ssh-keygen -t ed25519 -a 64 -f "$key" \\
+  ssh-keygen -t ed25519 -a 64 -f "$key" \
     -C "sftpdata@mds-linux-hardening-1b"
 fi
 ```
