@@ -22,6 +22,8 @@ The lab had three working nodes: my WSL workstation, the private admin EC2 insta
 
 [Open the editable draw.io architecture diagram](aws-infrastructure.drawio).
 
+**Diagram legend:** Blue arrows show SSM management sessions, including port forwarding. Black arrows show internet egress through the NAT Gateway and Internet Gateway. Orange outlines mark the EC2 security-group boundaries inside the private subnets.
+
 The admin and target instances had no public IPs or inbound security-group rules. Session Manager let me administer them through AWS-managed sessions, while the S3 Gateway endpoint carried the temporary files Ansible needed without routing that S3 traffic through the NAT Gateway. This walkthrough follows the dependencies from the beginning: I explain each tool before using it, identify the terminal for each command, and give a checkpoint before the next phase. Repository file links show the configuration alongside the walkthrough.
 
 | Layer | Sequence |
