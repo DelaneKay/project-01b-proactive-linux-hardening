@@ -1,0 +1,22 @@
+---
+- name: Check SSH socket activation
+  hosts: target
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Read SSH socket unit state
+      ansible.builtin.command:
+        argv:
+          - systemctl
+          - show
+          - ssh.socket
+          - --property=ActiveState
+          - --property=UnitFileState
+      register: ssh_socket_state
+      changed_when: false
+      failed_when: false
+
+    - name: Display SSH socket state
+      ansible.builtin.debug:
+        var: ssh_socket_state.stdout_lines
