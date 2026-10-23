@@ -548,55 +548,22 @@ SSH listened on local port 22, alongside resolver and time-service sockets. That
 
 **Checkpoint:** I identified the target before interpreting its service and firewall output.
 
-### 2.3 I prepared the dedicated data filesystem before configuring the chroot
+### 2.3 I checked the data mount and chroot boundary
 
-The 5-GiB disk created by Terraform is a block device, so it needed a filesystem mounted before SFTP could use it. I chose `/srv/sftp-data` as the mount point and future chroot root. A **chroot** gives the SFTP account a restricted filesystem view: inside it, `/` represents this directory. The [target playbook](../ansible/playbooks/harden-target.yml) later checks that `/srv/sftp-data` is a mount point and stops if it is not; the playbook does not format or mount the disk.
+Terraform attached a separate encrypted 5-GiB disk to the target. The SFTP data area was mounted at `/srv/sftp-data`, which became the chroot root. A **chroot** gives the SFTP account a restricted filesystem view: inside it, `/` represents this directory. The [target playbook](../ansible/playbooks/harden-target.yml) checks that `/srv/sftp-data` is a mount point and stops if it is missing; the playbook does not format or mount the disk.
 
-The original disk-formatting commands were not retained. These are the steps to reproduce the setup on a **new, empty** lab data volume. They belong in the target's SSM shell opened in Phase 2.2. I first inspect the disks so I can distinguish the separate 5-GiB EBS volume from the Ubuntu root disk:
+I previously added `lsblk`, `mkfs.ext4`, and `/etc/fstab` steps here as a setup recipe. The command record supplied for this lab does not show how I formatted or mounted the volume, so I removed those steps rather than present them as work I had done.
 
-```bash
-lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS,SERIAL
-sudo blkid
-findmnt /
-```
-
-`lsblk` shows device size, filesystem, mount point, and EBS serial; `blkid` shows existing filesystem identifiers; `findmnt /` identifies the disk backing the operating system. EC2 NVMe device names can change, so I verify the separate volume's identity before choosing its path. On a fresh lab volume with no filesystem or mount, I enter that verified path and inspect it once more:
-
-```bash
-read -r -p 'Verified empty data-device path: ' DATA_DEVICE
-lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS,SERIAL "$DATA_DEVICE"
-```
-
-Formatting destroys any filesystem already on the selected device. After confirming this is the empty 5-GiB data volume, I create an ext4 filesystem and the root-owned chroot directory, then read the new filesystem UUID:
-
-```bash
-sudo mkfs.ext4 "$DATA_DEVICE"
-sudo install -d -o root -g root -m 0755 /srv/sftp-data
-sudo blkid "$DATA_DEVICE"
-```
-
-I check whether `/etc/fstab` already has an entry for this mount, then add one only if it is absent:
-
-```bash
-grep -nF '/srv/sftp-data' /etc/fstab || true
-sudo nano /etc/fstab
-```
-
-The line uses the UUID returned by `blkid`, replacing the placeholder below. A UUID keeps the mount tied to the filesystem even if its `/dev/nvme...` name changes:
+After the admin controller and inventory were available, I checked the ownership and permissions of the chroot root through Ansible. The captured result was:
 
 ```text
-UUID=REPLACE_WITH_FILESYSTEM_UUID /srv/sftp-data ext4 defaults,nofail 0 2
+target | CHANGED | rc=0 >>
+root:root 755 /srv/sftp-data
 ```
 
-Finally, I mount the data volume using that saved entry and confirm the mount point and filesystem type:
+The output shows `/srv/sftp-data` was owned by `root:root` with mode `755`. That meets OpenSSH's requirement that the chroot root is not writable by the restricted SFTP account. The task only read file metadata; Ansible's `CHANGED` label did not mean this check modified the directory. The captured text contains the result but not the full command that produced it, so I cannot give an exact historical invocation for this check.
 
-```bash
-sudo mount /srv/sftp-data
-findmnt --mountpoint /srv/sftp-data
-df -hT /srv/sftp-data
-```
-
-**Checkpoint:** `/srv/sftp-data` is an ext4 mount on the separate data volume before I create the SFTP upload directory. The playbook's mount check prevents its tasks from putting transfer files on the Ubuntu root filesystem if that mount is missing.
+**Checkpoint:** the chroot root had the required ownership and permissions. I could then create a separate writable `/srv/sftp-data/upload` directory for the SFTP account.
 
 ### 2.4 I opened the admin node and prepared the Ansible controller
 
@@ -632,7 +599,7 @@ sudo apt-get update
 sudo apt-get install -y python3-venv python3-pip curl ca-certificates
 ```
 
-I kept Ansible and its Python libraries in a virtual environment so they would not overwrite Ubuntu-managed Python packages:
+For a fresh controller, a virtual environment keeps Ansible and its Python libraries separate from Ubuntu-managed Python packages:
 
 ```bash
 python3 -m venv "$HOME/.venvs/project-1b"
@@ -641,7 +608,7 @@ python -m pip install --upgrade pip
 python -m pip install ansible-core boto3 botocore
 ```
 
-The `amazon.aws.aws_ssm` connection plugin and the other project collections are listed in [requirements.yml](../ansible/requirements.yml). I installed them with:
+The `amazon.aws.aws_ssm` connection plugin and the other project collections are listed in [requirements.yml](../ansible/requirements.yml). The repeatable installation command is:
 
 ```bash
 ansible-galaxy collection install amazon.aws ansible.posix community.general
@@ -662,7 +629,7 @@ sudo dpkg -i /tmp/session-manager-plugin.deb
 session-manager-plugin --version
 ```
 
-I then checked that Ansible and AWS CLI were available in this admin shell:
+On a fresh controller, these commands check that Ansible and AWS CLI are available:
 
 ```bash
 ansible --version
@@ -681,9 +648,33 @@ My first attempt used the WSL path `/home/devsecops/ansible-project/inventory.in
 
 I used Ansible ad-hoc commands from the admin node to prepare the target account before applying the full SSH configuration. The `-i` option points to the admin node’s inventory, `target` selects the managed host, `-b` enables privilege escalation, and `-m` selects the Ansible module.
 
-The group creation returned `target | CHANGED` and created `sftp-only` with GID `1002`. The output I have does not include that group command’s exact invocation.
+Before creating anything, I checked whether the group, account, or upload directory already existed. My first read-only shell check returned no text, so it did not clearly establish the state of each item:
 
-I then created `sftpdata` as a non-interactive account, set `sftp-only` as its primary group, created its home directory, and locked its password:
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.shell \
+  -a 'getent group sftp-only || true; getent passwd sftpdata || true; test -d /srv/sftp-data/upload && stat -c "%U:%G %a %n" /srv/sftp-data/upload || echo "/srv/sftp-data/upload does not exist"'
+```
+
+I reran the check with a separate result for each item:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.shell \
+  -a 'if getent group sftp-only; then echo "sftp-only group exists"; else echo "sftp-only group absent"; fi; if getent passwd sftpdata; then echo "sftpdata account exists"; else echo "sftpdata account absent"; fi; if test -d /srv/sftp-data/upload; then stat -c "%U:%G %a %n" /srv/sftp-data/upload; else echo "/srv/sftp-data/upload absent"; fi'
+```
+
+Ansible reported `target | CHANGED | rc=0`, followed by `sftp-only group absent`, `sftpdata account absent`, and `/srv/sftp-data/upload absent`. These were read-only queries; the shell module's `CHANGED` status did not mean they created or changed anything.
+
+With those prerequisites confirmed, I created the dedicated group from the admin node's SSM shell:
+
+```bash
+ansible -i ~/ansible-project/inventory.ini target \
+  -b -m ansible.builtin.group \
+  -a 'name=sftp-only state=present'
+```
+
+Ansible returned `CHANGED` and created `sftp-only` with GID `1002`. I then created `sftpdata` as a non-interactive account, set `sftp-only` as its primary group, created its home directory, and locked its password:
 
 ```bash
 ansible -i /home/ssm-user/ansible-project/inventory.ini target \
