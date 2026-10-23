@@ -552,7 +552,51 @@ SSH listened on local port 22, alongside resolver and time-service sockets. That
 
 The 5-GiB disk created by Terraform is a block device, so it needed a filesystem mounted before SFTP could use it. I chose `/srv/sftp-data` as the mount point and future chroot root. A **chroot** gives the SFTP account a restricted filesystem view: inside it, `/` represents this directory. The [target playbook](../ansible/playbooks/harden-target.yml) later checks that `/srv/sftp-data` is a mount point and stops if it is not; the playbook does not format or mount the disk.
 
-**Checkpoint:** the separate data volume was mounted at `/srv/sftp-data` before I created the SFTP upload directory.
+The original disk-formatting commands were not retained. These are the steps to reproduce the setup on a **new, empty** lab data volume. They belong in the target's SSM shell opened in Phase 2.2. I first inspect the disks so I can distinguish the separate 5-GiB EBS volume from the Ubuntu root disk:
+
+```bash
+lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS,SERIAL
+sudo blkid
+findmnt /
+```
+
+`lsblk` shows device size, filesystem, mount point, and EBS serial; `blkid` shows existing filesystem identifiers; `findmnt /` identifies the disk backing the operating system. EC2 NVMe device names can change, so I verify the separate volume's identity before choosing its path. On a fresh lab volume with no filesystem or mount, I enter that verified path and inspect it once more:
+
+```bash
+read -r -p 'Verified empty data-device path: ' DATA_DEVICE
+lsblk -o NAME,SIZE,FSTYPE,UUID,MOUNTPOINTS,SERIAL "$DATA_DEVICE"
+```
+
+Formatting destroys any filesystem already on the selected device. After confirming this is the empty 5-GiB data volume, I create an ext4 filesystem and the root-owned chroot directory, then read the new filesystem UUID:
+
+```bash
+sudo mkfs.ext4 "$DATA_DEVICE"
+sudo install -d -o root -g root -m 0755 /srv/sftp-data
+sudo blkid "$DATA_DEVICE"
+```
+
+I check whether `/etc/fstab` already has an entry for this mount, then add one only if it is absent:
+
+```bash
+grep -nF '/srv/sftp-data' /etc/fstab || true
+sudo nano /etc/fstab
+```
+
+The line uses the UUID returned by `blkid`, replacing the placeholder below. A UUID keeps the mount tied to the filesystem even if its `/dev/nvme...` name changes:
+
+```text
+UUID=REPLACE_WITH_FILESYSTEM_UUID /srv/sftp-data ext4 defaults,nofail 0 2
+```
+
+Finally, I mount the data volume using that saved entry and confirm the mount point and filesystem type:
+
+```bash
+sudo mount /srv/sftp-data
+findmnt --mountpoint /srv/sftp-data
+df -hT /srv/sftp-data
+```
+
+**Checkpoint:** `/srv/sftp-data` is an ext4 mount on the separate data volume before I create the SFTP upload directory. The playbook's mount check prevents its tasks from putting transfer files on the Ubuntu root filesystem if that mount is missing.
 
 ### 2.4 I opened the admin node and prepared the Ansible controller
 
