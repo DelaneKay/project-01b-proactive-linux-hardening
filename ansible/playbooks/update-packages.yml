@@ -1,0 +1,19 @@
+---
+- name: Apply safe package upgrades to the SFTP target
+  hosts: target
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Upgrade packages without removing installed packages
+      ansible.builtin.apt:
+        upgrade: safe
+        update_cache: false
+        autoremove: false
+        autoclean: false
+        lock_timeout: 300
+      register: package_upgrade
+
+    - name: Show the APT upgrade output
+      ansible.builtin.debug:
+        var: package_upgrade.stdout_lines
