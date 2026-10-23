@@ -1197,7 +1197,7 @@ sudo augenrules --check
 
 ### 3.5 I inspected kernel settings before applying and rechecking corrections
 
-`sysctl` exposes kernel settings. I wanted to inspect their current values first, then persist deliberate changes rather than assume the defaults were right. This server is an SFTP host, so it does not need to route packets or advertise alternate network routes.
+After confirming that auditd captured the test changes, I moved from monitoring host activity to checking the kernel settings that shape process and network behavior. I used `sysctl` to inspect the current values before changing anything. Because this machine only served SFTP, it did not need to route packets or advertise alternate network routes.
 
 ```bash
 sudo sysctl kernel.randomize_va_space kernel.dmesg_restrict kernel.kptr_restrict \
