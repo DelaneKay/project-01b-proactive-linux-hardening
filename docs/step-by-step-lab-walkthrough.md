@@ -512,7 +512,7 @@ The admin node ID was `i-0d9cc5ae05f797442`, and the SFTP target ID was `i-0cce4
 
 ### 2.1 I checked Session Manager prerequisites before opening a session
 
-The EC2 instances were private, so I first checked whether Systems Manager could see them before trying to open a shell. In WSL, I queried the managed-instance list:
+With deployment complete and both instance IDs available, I moved from building the infrastructure to checking how I would access the private instances. Since they had no public IPs or inbound SSH rules, I first checked whether Systems Manager could see them. In WSL, I queried the managed-instance list:
 
 ```bash
 aws ssm describe-instance-information \
