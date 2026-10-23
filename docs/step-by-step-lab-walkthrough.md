@@ -20,7 +20,7 @@ The lab had three working nodes: my WSL workstation, the private admin EC2 insta
 
 ![Project 1B AWS infrastructure architecture](project-1b-aws-architecture.png)
 
-[Open the editable draw.io architecture diagram](aws-infrastructure.drawio).
+
 
 **Diagram legend:** Blue arrows show SSM management sessions, including port forwarding. Black arrows show internet egress through the NAT Gateway and Internet Gateway. Orange outlines mark the EC2 security-group boundaries inside the private subnets.
 
