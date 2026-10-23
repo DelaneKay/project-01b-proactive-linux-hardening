@@ -67,14 +67,26 @@ See [verification evidence](docs/verification.md), [design decisions](docs/decis
 
 ```text
 terraform/                 AWS network, IAM, S3, EC2, and encrypted EBS definitions
-ansible/playbooks/         Reusable target-hardening playbook
+ansible/playbooks/         Original lab playbooks and a separate reproducibility playbook
 ansible/inventory/         Safe inventory example; replace lab-specific values
 ansible/requirements.yml   Required Ansible collections
 docs/                      Walkthrough, decisions, and verification record
 evidence/                  Sanitized text evidence from the lab
 ```
 
-The actual Terraform source and provider lockfile are included. The original Ansible playbook was not retained in the WSL project directory; `ansible/playbooks/harden-target.yml` is a reproducibility playbook reconstructed from the journal and observed final configuration. It is syntax-checked as repository content, but it was not the exact file used during the lab run.
+The actual Terraform source and provider lockfile are included. The Ansible folder contains these playbooks from the lab commands:
+
+| Playbook | Purpose |
+| --- | --- |
+| [check-updates.yml](ansible/playbooks/check-updates.yml) | List pending target package updates |
+| [update-packages.yml](ansible/playbooks/update-packages.yml) | Apply a safe target package upgrade |
+| [audit-ssh.yml](ansible/playbooks/audit-ssh.yml) | Check SSH service state and TCP listeners |
+| [check-ssh-socket.yml](ansible/playbooks/check-ssh-socket.yml) | Inspect SSH socket activation |
+| [audit-sshd-config.yml](ansible/playbooks/audit-sshd-config.yml) | Attempt to read effective SSH settings; this run stopped because `/run/sshd` was missing |
+| [audit-sshd-files.yml](ansible/playbooks/audit-sshd-files.yml) | Read SSH configuration files |
+| [configure-sftp.yml](ansible/playbooks/configure-sftp.yml) | Configure the restricted SFTP account and SSH policy; this is the playbook whose successful run reported `ok=17 changed=3` |
+
+[harden-target.yml](ansible/playbooks/harden-target.yml) is a separate reproducibility playbook reconstructed from the final target configuration. It was syntax-checked as repository content but was not the file used for the original successful run.
 
 ## Re-run the lab
 
