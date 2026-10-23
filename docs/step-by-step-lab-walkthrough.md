@@ -410,7 +410,7 @@ Private subnet egress -> one public-subnet NAT Gateway -> Internet
 Private S3 transfer bucket -> S3 Gateway VPC endpoint
 ```
 
-Although the EC2 instances had no public IPs or inbound SSH access, they still needed outbound connectivity for Systems Manager, Ubuntu updates, and other permitted services. To provide that egress, I compared a self-managed NAT instance with AWS’s managed NAT Gateway. A NAT instance would add another Linux server for me to configure, harden, patch, monitor, and recover if it failed. I chose the NAT Gateway to avoid that operational work, while recognizing that a managed gateway has an ongoing service cost. I placed one Gateway in one Availability Zone because the lab did not need multi-AZ egress. Since the existing budget alert sent notifications rather than stopping resources, I included destroying the lab after the demonstration in my cleanup plan.
+Although the EC2 instances had no public IPs or inbound SSH access, they still needed outbound connectivity for Systems Manager, Ubuntu updates, and other permitted services. To provide that egress, I compared a self-managed NAT instance with AWS’s managed NAT Gateway. A NAT instance would add another Linux server for me to configure, harden, patch, monitor, and recover if it failed. I chose the NAT Gateway to avoid that operational work, while recognizing that a managed gateway has an ongoing service cost. I placed one Gateway in one Availability Zone because the lab did not need multi-AZ egress.
 
 The table below summarizes the decisions that shaped the architecture and points to the Terraform files that implement each one:
 
