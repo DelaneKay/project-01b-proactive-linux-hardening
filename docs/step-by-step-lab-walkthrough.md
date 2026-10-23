@@ -550,13 +550,9 @@ SSH listened on local port 22, alongside resolver and time-service sockets. That
 
 ### 2.3 I prepared the dedicated data filesystem before configuring the chroot
 
-The 5-GiB disk created by Terraform is a block device. SFTP needs a mounted filesystem. I chose `/srv/sftp-data` as the server-side storage location and future chroot root. A **chroot** gives the SFTP account a restricted filesystem view; its `/` will represent this directory.
+The 5-GiB disk created by Terraform is a block device, so it needed a filesystem mounted before SFTP could use it. I chose `/srv/sftp-data` as the mount point and future chroot root. A **chroot** gives the SFTP account a restricted filesystem view: inside it, `/` represents this directory. The target playbook later checks that `/srv/sftp-data` is a mount point and stops if it is not; the playbook does not format or mount the disk.
 
-I selected a separate data volume for the target:
-
-The data mount used `/srv/sftp-data` on the separate disk. Its root-owned chroot and writable upload directory are described below.
-
-**Checkpoint:** the separate data mount was in place before the SFTP account used its upload directory.
+**Checkpoint:** the separate data volume was mounted at `/srv/sftp-data` before I created the SFTP upload directory.
 
 ### 2.4 I opened the admin node and installed the Ansible controller tools
 
@@ -564,17 +560,55 @@ Ansible runs tasks against a target from a **controller**. In this lab the contr
 
 I used the private admin node as the Ansible controller, with its instance role providing AWS permissions. The [collection requirements](../ansible/requirements.yml) document the repository's dependencies.
 
-### 2.5 I created the SFTP key and staged the files the controller would need
+### 2.5 I configured Ansible to reach the private target
 
-The transfer identity needs a dedicated key. The **private key** stays with the client; the **public key** is installed on the server. Possessing the public key alone does not let someone log in.
+I ran Ansible from the private admin node using the `amazon.aws.aws_ssm` connection and an inventory for the target instance, Region, and transfer bucket. The published [inventory example](../ansible/inventory/hosts.example.yml) and [collection requirements](../ansible/requirements.yml) document these settings.
 
-My client used the dedicated key file `~/.ssh/mds-linux-hardening-1b-sftpdata`. The bucket held its public key at `sftpdata/sftpdata.pub`; the private key stayed on the workstation.
+My first attempt used the WSL path `/home/devsecops/ansible-project/inventory.ini`. Ansible could not find that inventory, skipped the target, and made no changes. I corrected the working location by running the commands in the admin node’s SSM session and using `/home/ssm-user/ansible-project/inventory.ini` for the target alias `target`.
 
-### 2.6 I configured Ansible to reach the private target
+### 2.6 I created the SFTP account and upload directory with Ansible
 
-The controller used `amazon.aws.aws_ssm` with the target instance ID, Region, and transfer bucket. The published [inventory example](../ansible/inventory/hosts.example.yml) and [collection requirements](../ansible/requirements.yml) document those settings. SSM shell access and Ansible module transfer have different dependencies: Ansible also needed S3 connectivity and the controller's scoped permissions.
+I used Ansible ad-hoc commands from the admin node to prepare the target account before applying the full SSH configuration. The `-i` option points to the admin node’s inventory, `target` selects the managed host, `-b` enables privilege escalation, and `-m` selects the Ansible module.
 
-### 2.7 I reviewed the account, filesystem, and SSH policy before applying it
+The group creation returned `target | CHANGED` and created `sftp-only` with GID `1002`. The output I have does not include that group command’s exact invocation.
+
+I then created `sftpdata` as a non-interactive account, set `sftp-only` as its primary group, created its home directory, and locked its password:
+
+```bash
+ansible -i /home/ssm-user/ansible-project/inventory.ini target \\
+  -b -m ansible.builtin.user \\
+  -a 'name=sftpdata group=sftp-only shell=/usr/sbin/nologin create_home=yes password_lock=true state=present'
+```
+
+Ansible returned `CHANGED`; the account had UID `1002`, primary group GID `1002`, home `/home/sftpdata`, and shell `/usr/sbin/nologin`. The locked password prevents password-based login; the later SSH policy allows the dedicated public key for SFTP access.
+
+Next, I created the writable upload directory inside the chroot and set its owner, group, and mode:
+
+```bash
+ansible -i /home/ssm-user/ansible-project/inventory.ini target \\
+  -b -m ansible.builtin.file \\
+  -a 'path=/srv/sftp-data/upload state=directory owner=sftpdata group=sftp-only mode=0750'
+```
+
+Ansible returned `CHANGED` for `/srv/sftp-data/upload`, owned by `sftpdata:sftp-only` with mode `0750`. The SFTP account can write inside this directory; the chroot root remains root-owned and not writable by the account.
+
+### 2.7 I created the SFTP key on my WSL workstation
+
+The private key stays on my client; only its matching public key is installed on the target. I checked that the key filename was unused before generating an Ed25519 key pair, which avoids overwriting an existing key:
+
+```bash
+key="$HOME/.ssh/mds-linux-hardening-1b-sftpdata"
+if [ -e "$key" ] || [ -e "$key.pub" ]; then
+  echo "Key file already exists; stopping to avoid overwriting it."
+else
+  ssh-keygen -t ed25519 -a 64 -f "$key" \\
+    -C "sftpdata@mds-linux-hardening-1b"
+fi
+```
+
+I generated the key pair on WSL and kept the private key there. The public key was staged for the controller to install on the target.
+
+### 2.8 I reviewed the account, filesystem, and SSH policy before applying it
 
 The transfer user's job is to move files. It does not need `sudo`, an interactive shell, forwarding, or permission to change the host. I chose a user named `sftpdata` in group `sftp-only`, with a locked password and `/usr/sbin/nologin` shell. The [target playbook](../ansible/playbooks/harden-target.yml) declares those settings and installs the public key staged above.
 
@@ -609,13 +643,13 @@ Match all
 
 `PermitRootLogin no` blocks root SSH login. Password and keyboard-interactive authentication are disabled, while public keys remain enabled. `Match Group sftp-only` applies the restricted policy to the transfer group; `ForceCommand internal-sftp -d /upload` forces SFTP and sets its starting directory. TTY and forwarding restrictions reduce extra capabilities. The client will see `/upload`, which maps to `/srv/sftp-data/upload` on the host.
 
-### 2.8 I applied the access configuration with Ansible
+### 2.9 I applied the access configuration with Ansible
 
 I used Ansible for the access configuration. The repository's [target playbook](../ansible/playbooks/harden-target.yml) expresses the target configuration; 
 
 In particular, I installed auditd, enabled UFW, and corrected network sysctls manually during the subsequent checks. I describe those actions in Layer 3 rather than claim that the earlier Ansible run had already done them.
 
-### 2.9 I verified the access restrictions through SFTP
+### 2.10 I verified the access restrictions through SFTP
 
 I checked the restrictions with the transfer and denied-action tests documented in Layer 4. The captured evidence includes a refused write at the chroot root and the response `This service allows sftp connections only.
 
